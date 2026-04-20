@@ -654,6 +654,11 @@ let safeRooms = [];
 let houseCells = new Uint8Array(COLS * ROWS);
 let villageHouses = [];
 let villageProps = [];
+let forestRiver = null;
+let forestBridge = null;
+let forestRiverCells = new Uint8Array(COLS * ROWS);
+let forestPaths = [];
+let forestPathCells = new Uint8Array(COLS * ROWS);
 
 function isSafeCell(cx, cy) {
   return inBounds(cx, cy) && safeCells[cellIndex(cx, cy)] === 1;
@@ -670,6 +675,244 @@ function rectTooClose(ax, ay, aw, ah, bx, by, bw, bh, gap) {
     ay + ah - 1 + gap < by ||
     by + bh - 1 + gap < ay
   );
+}
+
+function pointToSegmentDistance(px, py, ax, ay, bx, by) {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const lenSq = abx * abx + aby * aby;
+  if (lenSq <= 0.0001) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * abx + (py - ay) * aby) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const nx = ax + abx * t;
+  const ny = ay + aby * t;
+  return Math.hypot(px - nx, py - ny);
+}
+
+function minDistanceToPolyline(px, py, points) {
+  if (!points || points.length === 0) return Infinity;
+  let best = Infinity;
+  for (let i = 1; i < points.length; i++) {
+    const dist = pointToSegmentDistance(px, py, points[i - 1].x, points[i - 1].y, points[i].x, points[i].y);
+    if (dist < best) best = dist;
+  }
+  return best;
+}
+
+function hasMarkedCellNear(target, cx, cy, radius = 0) {
+  const rr = Math.max(0, Math.ceil(radius));
+  for (let y = cy - rr; y <= cy + rr; y++) {
+    for (let x = cx - rr; x <= cx + rr; x++) {
+      if (!inBounds(x, y)) continue;
+      if (target[cellIndex(x, y)] === 1) return true;
+    }
+  }
+  return false;
+}
+
+function markCellsNearPolyline(target, points, widthCells) {
+  if (!points || points.length < 2) return;
+  let minX = COLS;
+  let maxX = 0;
+  let minY = ROWS;
+  let maxY = 0;
+  for (const point of points) {
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y);
+    maxY = Math.max(maxY, point.y);
+  }
+
+  const pad = Math.ceil(widthCells + 2);
+  const startX = Math.max(0, Math.floor(minX - pad));
+  const endX = Math.min(COLS - 1, Math.ceil(maxX + pad));
+  const startY = Math.max(0, Math.floor(minY - pad));
+  const endY = Math.min(ROWS - 1, Math.ceil(maxY + pad));
+
+  for (let cy = startY; cy <= endY; cy++) {
+    for (let cx = startX; cx <= endX; cx++) {
+      const px = cx + 0.5;
+      const py = cy + 0.5;
+      if (minDistanceToPolyline(px, py, points) <= widthCells) {
+        target[cellIndex(cx, cy)] = 1;
+      }
+    }
+  }
+}
+
+function getPolylineXAtY(points, y) {
+  if (!points || !points.length) return COLS / 2;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const minY = Math.min(a.y, b.y);
+    const maxY = Math.max(a.y, b.y);
+    if (y < minY || y > maxY) continue;
+    const t = maxY === minY ? 0 : (y - a.y) / (b.y - a.y);
+    return a.x + (b.x - a.x) * t;
+  }
+  return points[points.length - 1].x;
+}
+
+function isRiverCell(cx, cy) {
+  return inBounds(cx, cy) && forestRiverCells[cellIndex(cx, cy)] === 1;
+}
+
+function isPathCell(cx, cy) {
+  return inBounds(cx, cy) && forestPathCells[cellIndex(cx, cy)] === 1;
+}
+
+function isBridgeCell(cx, cy) {
+  if (!forestBridge) return false;
+  return (
+    Math.abs(cx + 0.5 - forestBridge.cx) <= forestBridge.halfWidth &&
+    Math.abs(cy + 0.5 - forestBridge.cy) <= forestBridge.halfHeight
+  );
+}
+
+function rectTouchesRiver(x, y, w, h, padding = 0) {
+  for (let cy = y - padding; cy < y + h + padding; cy++) {
+    for (let cx = x - padding; cx < x + w + padding; cx++) {
+      if (!inBounds(cx, cy)) continue;
+      if (isBridgeCell(cx, cy)) continue;
+      if (isRiverCell(cx, cy)) return true;
+    }
+  }
+  return false;
+}
+
+function pointInBridge(wx, wy) {
+  if (!forestBridge) return false;
+  const px = wx / CELL;
+  const py = wy / CELL;
+  return (
+    Math.abs(px - forestBridge.cx) <= forestBridge.halfWidth &&
+    Math.abs(py - forestBridge.cy) <= forestBridge.halfHeight
+  );
+}
+
+function pointInForestRiver(wx, wy) {
+  if (currentLocationId !== LOCATION_FOREST_VILLAGE || !forestRiver) return false;
+  if (pointInBridge(wx, wy)) return false;
+  const px = wx / CELL;
+  const py = wy / CELL;
+  return minDistanceToPolyline(px, py, forestRiver.points) <= forestRiver.halfWidth;
+}
+
+function generateForestRiver() {
+  forestRiver = null;
+  forestBridge = null;
+  forestRiverCells = new Uint8Array(COLS * ROWS);
+  if (currentLocationId !== LOCATION_FOREST_VILLAGE) return;
+
+  const baseX = COLS * (0.36 + worldRandom() * 0.18);
+  const swingA = 4.5 + worldRandom() * 1.8;
+  const swingB = 2 + worldRandom() * 1.8;
+  const phaseA = worldRandom() * Math.PI * 2;
+  const phaseB = worldRandom() * Math.PI * 2;
+  const points = [];
+
+  for (let y = -2; y <= ROWS + 2; y += 4) {
+    const x = baseX
+      + Math.sin(y * 0.19 + phaseA) * swingA
+      + Math.sin(y * 0.47 + phaseB) * swingB
+      + (worldRandom() - 0.5) * 1.4;
+    points.push({
+      x: Math.max(8.5, Math.min(COLS - 7.5, x + 0.5)),
+      y: y + 0.5,
+    });
+  }
+
+  const halfWidth = 1.45 + worldRandom() * 0.25;
+  forestRiver = { points, halfWidth };
+  markCellsNearPolyline(forestRiverCells, points, halfWidth + 0.85);
+
+  const bridgeY = Math.max(12.5, Math.min(ROWS - 11.5, Math.floor(ROWS * (0.48 + (worldRandom() - 0.5) * 0.12)) + 0.5));
+  const bridgeX = getPolylineXAtY(points, bridgeY);
+  forestBridge = {
+    cx: bridgeX,
+    cy: bridgeY,
+    halfWidth: halfWidth + 1.7,
+    halfHeight: 0.72,
+  };
+}
+
+function createForestTrail(start, end, wobble = 2.5) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const steps = Math.max(4, Math.ceil(len / 6));
+  const phase = worldRandom() * Math.PI * 2;
+  const points = [{ x: start.x, y: start.y }];
+
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const swell = Math.sin(t * Math.PI);
+    const drift = Math.sin(t * Math.PI * 2 + phase) * wobble * 0.45 + (worldRandom() - 0.5) * wobble;
+    points.push({
+      x: start.x + dx * t + nx * drift * swell,
+      y: start.y + dy * t + ny * drift * swell,
+    });
+  }
+
+  points.push({ x: end.x, y: end.y });
+  return points;
+}
+
+function pushForestPath(start, end, wobble = 2.5) {
+  const path = createForestTrail(start, end, wobble);
+  forestPaths.push(path);
+  markCellsNearPolyline(forestPathCells, path, 0.72);
+}
+
+function generateForestPaths() {
+  forestPaths = [];
+  forestPathCells = new Uint8Array(COLS * ROWS);
+  if (currentLocationId !== LOCATION_FOREST_VILLAGE || !forestBridge) return;
+
+  const leftBridge = { x: forestBridge.cx - (forestBridge.halfWidth + 0.6), y: forestBridge.cy };
+  const rightBridge = { x: forestBridge.cx + (forestBridge.halfWidth + 0.6), y: forestBridge.cy };
+  const leftTargets = [
+    { x: PLAYER_START_CX + 0.5, y: PLAYER_START_CY + 0.5 },
+    { x: MONSTER_START_CX + 1.5, y: MONSTER_START_CY + 1.5 },
+  ];
+  const rightTargets = [
+    { x: EXIT_CX + 0.5, y: EXIT_CY + 0.5 },
+  ];
+
+  for (const house of villageHouses) {
+    const point = { x: house.centerCX + 0.5, y: house.centerCY + 0.5 };
+    if (point.x < forestBridge.cx) leftTargets.push(point);
+    else rightTargets.push(point);
+  }
+
+  for (const prop of villageProps) {
+    if (prop.type !== 'campfire') continue;
+    const point = { x: prop.cx + 0.5, y: prop.cy + 0.5 };
+    if (point.x < forestBridge.cx) leftTargets.push(point);
+    else rightTargets.push(point);
+  }
+
+  const leftSorted = leftTargets
+    .sort((a, b) => Math.hypot(a.x - leftBridge.x, a.y - leftBridge.y) - Math.hypot(b.x - leftBridge.x, b.y - leftBridge.y))
+    .slice(0, 8);
+  const rightSorted = rightTargets
+    .sort((a, b) => Math.hypot(a.x - rightBridge.x, a.y - rightBridge.y) - Math.hypot(b.x - rightBridge.x, b.y - rightBridge.y))
+    .slice(0, 8);
+
+  pushForestPath({ x: PLAYER_START_CX + 0.5, y: PLAYER_START_CY + 0.5 }, leftBridge, 2.2);
+  pushForestPath(rightBridge, { x: EXIT_CX + 0.5, y: EXIT_CY + 0.5 }, 2.4);
+
+  for (const target of leftSorted) {
+    if (Math.hypot(target.x - (PLAYER_START_CX + 0.5), target.y - (PLAYER_START_CY + 0.5)) < 2) continue;
+    pushForestPath(target, leftBridge, 2 + worldRandom() * 1.8);
+  }
+  for (const target of rightSorted) {
+    if (Math.hypot(target.x - (EXIT_CX + 0.5), target.y - (EXIT_CY + 0.5)) < 2) continue;
+    pushForestPath(target, rightBridge, 2 + worldRandom() * 1.8);
+  }
 }
 
 function markSafeZoneArea(x, y, w, h, extra = {}) {
@@ -824,6 +1067,9 @@ function carveVillageHouse(x, y, w, h) {
     h,
     centerCX: x + ((w - 1) >> 1),
     centerCY: y + ((h - 1) >> 1),
+    roofTone: 24 + Math.floor(worldRandom() * 30),
+    wallTone: 44 + Math.floor(worldRandom() * 26),
+    glow: 0.45 + worldRandom() * 0.35,
   });
 }
 
@@ -831,10 +1077,11 @@ function generateVillageHouses() {
   if (currentLocationId !== LOCATION_FOREST_VILLAGE) return;
 
   let attempts = 0;
-  while (villageHouses.length < 14 && attempts < 1400) {
+  while (villageHouses.length < 18 && attempts < 2400) {
     attempts++;
-    const w = 3 + Math.floor(worldRandom() * 3);
-    const h = 3 + Math.floor(worldRandom() * 3);
+    const sizeRoll = worldRandom();
+    const w = sizeRoll < 0.2 ? 6 + Math.floor(worldRandom() * 2) : 3 + Math.floor(worldRandom() * 4);
+    const h = sizeRoll < 0.2 ? 5 + Math.floor(worldRandom() * 2) : 3 + Math.floor(worldRandom() * 4);
     const x = 2 + Math.floor(worldRandom() * (COLS - w - 4));
     const y = 2 + Math.floor(worldRandom() * (ROWS - h - 4));
     const centerCX = x + ((w - 1) >> 1);
@@ -844,6 +1091,9 @@ function generateVillageHouses() {
     const exitDist = Math.hypot(centerCX - EXIT_CX, centerCY - EXIT_CY);
     const monsterDist = Math.hypot(centerCX - MONSTER_START_CX, centerCY - MONSTER_START_CY);
     if (playerDist < 9 || exitDist < 7 || monsterDist < 7) continue;
+    if (rectTouchesRiver(x, y, w, h, 2)) continue;
+    if (hasMarkedCellNear(forestRiverCells, centerCX, centerCY, 2)) continue;
+    if (isBridgeCell(centerCX, centerCY)) continue;
 
     let blocked = false;
     for (const room of safeRooms) {
@@ -865,13 +1115,19 @@ function generateVillageHouses() {
   }
 }
 
-function isVillagePropPlacementAllowed(cx, cy, minDistance = 0, minPropGap = 1.2) {
+function isVillagePropPlacementAllowed(cx, cy, minDistance = 0, minPropGap = 1.2, options = {}) {
+  const {
+    avoidPaths = false,
+    pathGap = 0,
+  } = options;
   if (currentLocationId !== LOCATION_FOREST_VILLAGE) return false;
   if (!inBounds(cx, cy) || !maze[cellIndex(cx, cy)]) return false;
   if (isSafeCell(cx, cy) || isHouseCell(cx, cy)) return false;
+  if (isRiverCell(cx, cy) || isBridgeCell(cx, cy)) return false;
   if (Math.hypot(cx - PLAYER_START_CX, cy - PLAYER_START_CY) < minDistance) return false;
   if (Math.hypot(cx - EXIT_CX, cy - EXIT_CY) < minDistance) return false;
   if (Math.hypot(cx - MONSTER_START_CX, cy - MONSTER_START_CY) < minDistance) return false;
+  if (avoidPaths && hasMarkedCellNear(forestPathCells, cx, cy, pathGap)) return false;
   return !villageProps.some(prop => Math.hypot(prop.cx - cx, prop.cy - cy) < minPropGap);
 }
 
@@ -885,77 +1141,18 @@ function pushVillageProp(prop) {
 
 function generateVillageProps() {
   villageProps = [];
+  forestPaths = [];
+  forestPathCells = new Uint8Array(COLS * ROWS);
   if (currentLocationId !== LOCATION_FOREST_VILLAGE) return;
-
-  let treeCount = 0;
-  let treeAttempts = 0;
-  while (treeCount < 170 && treeAttempts < 3200) {
-    treeAttempts++;
-    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
-    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
-    if (!isVillagePropPlacementAllowed(cx, cy, 4, 1.05)) continue;
-    const dead = worldRandom() < 0.14;
-    pushVillageProp({
-      type: dead ? 'deadTree' : 'tree',
-      cx,
-      cy,
-      blocking: true,
-      shape: 'circle',
-      radius: dead ? 10 + worldRandom() * 3 : 12 + worldRandom() * 5,
-      sway: worldRandom() * Math.PI * 2,
-      size: 0.9 + worldRandom() * 0.35,
-    });
-    treeCount++;
-  }
-
-  let rockCount = 0;
-  let rockAttempts = 0;
-  while (rockCount < 80 && rockAttempts < 1800) {
-    rockAttempts++;
-    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
-    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
-    if (!isVillagePropPlacementAllowed(cx, cy, 3, 1.15)) continue;
-    pushVillageProp({
-      type: 'rock',
-      cx,
-      cy,
-      blocking: true,
-      shape: 'circle',
-      radius: 8 + worldRandom() * 6,
-      width: 16 + worldRandom() * 12,
-      height: 12 + worldRandom() * 10,
-      tilt: worldRandom() * Math.PI,
-    });
-    rockCount++;
-  }
-
-  let stumpCount = 0;
-  let stumpAttempts = 0;
-  while (stumpCount < 34 && stumpAttempts < 900) {
-    stumpAttempts++;
-    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
-    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
-    if (!isVillagePropPlacementAllowed(cx, cy, 3, 1.2)) continue;
-    pushVillageProp({
-      type: 'stump',
-      cx,
-      cy,
-      blocking: true,
-      shape: 'circle',
-      radius: 8 + worldRandom() * 2,
-      width: 14 + worldRandom() * 8,
-      height: 10 + worldRandom() * 5,
-    });
-    stumpCount++;
-  }
 
   let campCount = 0;
   let campAttempts = 0;
-  while (campCount < 14 && campAttempts < 1200) {
+  while (campCount < 18 && campAttempts < 1800) {
     campAttempts++;
     const cx = 3 + Math.floor(worldRandom() * (COLS - 6));
     const cy = 3 + Math.floor(worldRandom() * (ROWS - 6));
-    if (!isVillagePropPlacementAllowed(cx, cy, 6, 2.2)) continue;
+    if (!isVillagePropPlacementAllowed(cx, cy, 6, 2.4)) continue;
+    if (hasMarkedCellNear(forestRiverCells, cx, cy, 2)) continue;
 
     pushVillageProp({
       type: 'campfire',
@@ -977,12 +1174,17 @@ function generateVillageProps() {
       { cx: cx - 1, cy: cy - 1 },
       { cx: cx + 1, cy: cy - 1 },
       { cx: cx - 1, cy: cy + 1 },
+      { cx: cx + 2, cy },
+      { cx: cx - 2, cy },
+      { cx, cy: cy + 2 },
+      { cx, cy: cy - 2 },
     ].sort(() => worldRandom() - 0.5);
 
-    const tentTarget = worldRandom() < 0.45 ? 3 : 2;
+    const tentTarget = 2 + Math.floor(worldRandom() * 3);
     let tentsPlaced = 0;
     for (const spot of tentSpots) {
       if (!isVillagePropPlacementAllowed(spot.cx, spot.cy, 1, 1.55)) continue;
+      if (hasMarkedCellNear(forestRiverCells, spot.cx, spot.cy, 1)) continue;
       pushVillageProp({
         type: 'tent',
         cx: spot.cx,
@@ -1002,11 +1204,145 @@ function generateVillageProps() {
       tentsPlaced++;
       if (tentsPlaced >= tentTarget) break;
     }
+
+    if (worldRandom() < 0.9) {
+      const logSpots = [
+        { cx: cx + 1, cy: cy + 2 },
+        { cx: cx - 1, cy: cy - 2 },
+        { cx: cx + 2, cy: cy - 1 },
+        { cx: cx - 2, cy: cy + 1 },
+      ].sort(() => worldRandom() - 0.5);
+
+      for (const spot of logSpots.slice(0, 2)) {
+        if (!isVillagePropPlacementAllowed(spot.cx, spot.cy, 1, 1.25)) continue;
+        pushVillageProp({
+          type: 'log',
+          cx: spot.cx,
+          cy: spot.cy,
+          blocking: true,
+          shape: 'rect',
+          width: 24 + worldRandom() * 12,
+          height: 9 + worldRandom() * 3,
+          angle: worldRandom() * Math.PI,
+        });
+      }
+    }
+  }
+
+  generateForestPaths();
+
+  let treeCount = 0;
+  let treeAttempts = 0;
+  while (treeCount < 250 && treeAttempts < 5200) {
+    treeAttempts++;
+    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
+    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
+    if (!isVillagePropPlacementAllowed(cx, cy, 4, 1.02, { avoidPaths: true, pathGap: 0 })) continue;
+    if (hasMarkedCellNear(forestRiverCells, cx, cy, 1)) continue;
+    const dead = worldRandom() < 0.16;
+    pushVillageProp({
+      type: dead ? 'deadTree' : 'tree',
+      cx,
+      cy,
+      blocking: true,
+      shape: 'circle',
+      radius: dead ? 10 + worldRandom() * 3 : 12 + worldRandom() * 6,
+      sway: worldRandom() * Math.PI * 2,
+      size: 0.9 + worldRandom() * 0.45,
+    });
+    treeCount++;
+  }
+
+  let bushCount = 0;
+  let bushAttempts = 0;
+  while (bushCount < 140 && bushAttempts < 3200) {
+    bushAttempts++;
+    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
+    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
+    if (!isVillagePropPlacementAllowed(cx, cy, 2, 0.8, { avoidPaths: true, pathGap: 0 })) continue;
+    if (hasMarkedCellNear(forestRiverCells, cx, cy, 1)) continue;
+    const dense = worldRandom() < 0.28;
+    pushVillageProp({
+      type: 'bush',
+      cx,
+      cy,
+      blocking: dense,
+      shape: 'circle',
+      radius: dense ? 8 + worldRandom() * 4 : 0,
+      size: 0.8 + worldRandom() * 0.5,
+      tint: worldRandom(),
+    });
+    bushCount++;
+  }
+
+  let rockCount = 0;
+  let rockAttempts = 0;
+  while (rockCount < 90 && rockAttempts < 2200) {
+    rockAttempts++;
+    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
+    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
+    if (!isVillagePropPlacementAllowed(cx, cy, 3, 1.08, { avoidPaths: true, pathGap: 0 })) continue;
+    if (hasMarkedCellNear(forestRiverCells, cx, cy, 1)) continue;
+    pushVillageProp({
+      type: 'rock',
+      cx,
+      cy,
+      blocking: true,
+      shape: 'circle',
+      radius: 8 + worldRandom() * 6,
+      width: 16 + worldRandom() * 12,
+      height: 12 + worldRandom() * 10,
+      tilt: worldRandom() * Math.PI,
+    });
+    rockCount++;
+  }
+
+  let stumpCount = 0;
+  let stumpAttempts = 0;
+  while (stumpCount < 42 && stumpAttempts < 1200) {
+    stumpAttempts++;
+    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
+    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
+    if (!isVillagePropPlacementAllowed(cx, cy, 3, 1.14, { avoidPaths: true, pathGap: 0 })) continue;
+    if (hasMarkedCellNear(forestRiverCells, cx, cy, 1)) continue;
+    pushVillageProp({
+      type: 'stump',
+      cx,
+      cy,
+      blocking: true,
+      shape: 'circle',
+      radius: 8 + worldRandom() * 2,
+      width: 14 + worldRandom() * 8,
+      height: 10 + worldRandom() * 5,
+    });
+    stumpCount++;
+  }
+
+  let logCount = 0;
+  let logAttempts = 0;
+  while (logCount < 28 && logAttempts < 900) {
+    logAttempts++;
+    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
+    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
+    if (!isVillagePropPlacementAllowed(cx, cy, 3, 1.12, { avoidPaths: true, pathGap: 0 })) continue;
+    if (hasMarkedCellNear(forestRiverCells, cx, cy, 1)) continue;
+    pushVillageProp({
+      type: 'log',
+      cx,
+      cy,
+      blocking: true,
+      shape: 'rect',
+      width: 26 + worldRandom() * 12,
+      height: 8 + worldRandom() * 4,
+      angle: worldRandom() * Math.PI,
+    });
+    logCount++;
   }
 }
 
 function pointInVillageObstacle(wx, wy) {
   if (currentLocationId !== LOCATION_FOREST_VILLAGE) return false;
+  if (pointInForestRiver(wx, wy)) return true;
   for (const prop of villageProps) {
     if (!prop.blocking) continue;
     if (prop.shape === 'circle') {
@@ -1122,6 +1458,11 @@ function initializeWorld(seed, locationId = null) {
   houseCells = new Uint8Array(COLS * ROWS);
   villageHouses = [];
   villageProps = [];
+  forestRiver = null;
+  forestBridge = null;
+  forestRiverCells = new Uint8Array(COLS * ROWS);
+  forestPaths = [];
+  forestPathCells = new Uint8Array(COLS * ROWS);
   almondWaters = [];
   weapons = [];
   bullets = [];
@@ -1134,6 +1475,7 @@ function initializeWorld(seed, locationId = null) {
   maze[cellIndex(EXIT_CX - 1, EXIT_CY)] |= 0b1111;
 
   if (currentLocationId === LOCATION_FOREST_VILLAGE) {
+    generateForestRiver();
     generateVillageHouses();
     generateVillageProps();
   } else {
@@ -2067,6 +2409,77 @@ function getWallFaceTileForSegment(cx, cy, bit) {
   return (isHouseCell(cx, cy) || isHouseCell(nx, ny)) ? houseFaceCanvas : forestFaceCanvas;
 }
 
+function traceWorldPolyline(points) {
+  if (!points || points.length < 2) return false;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x * CELL - cam.x, points[0].y * CELL - cam.y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x * CELL - cam.x, points[i].y * CELL - cam.y);
+  }
+  return true;
+}
+
+function drawForestGroundDetails() {
+  if (currentLocationId !== LOCATION_FOREST_VILLAGE) return;
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  for (const path of forestPaths) {
+    if (!traceWorldPolyline(path)) continue;
+    ctx.strokeStyle = 'rgba(48, 35, 21, 0.18)';
+    ctx.lineWidth = CELL * 0.48;
+    ctx.stroke();
+
+    traceWorldPolyline(path);
+    ctx.strokeStyle = 'rgba(98, 78, 52, 0.2)';
+    ctx.lineWidth = CELL * 0.28;
+    ctx.stroke();
+  }
+
+  if (forestRiver) {
+    traceWorldPolyline(forestRiver.points);
+    ctx.strokeStyle = 'rgba(64, 48, 26, 0.34)';
+    ctx.lineWidth = (forestRiver.halfWidth * 2 + 0.45) * CELL;
+    ctx.stroke();
+
+    traceWorldPolyline(forestRiver.points);
+    ctx.strokeStyle = 'rgba(18, 48, 63, 0.86)';
+    ctx.lineWidth = (forestRiver.halfWidth * 2) * CELL;
+    ctx.stroke();
+
+    traceWorldPolyline(forestRiver.points);
+    ctx.strokeStyle = 'rgba(66, 126, 152, 0.24)';
+    ctx.lineWidth = Math.max(10, (forestRiver.halfWidth * 2 - 0.7) * CELL);
+    ctx.stroke();
+  }
+
+  if (forestBridge) {
+    const bx = forestBridge.cx * CELL - cam.x;
+    const by = forestBridge.cy * CELL - cam.y;
+    const bw = forestBridge.halfWidth * CELL * 2 + 20;
+    const bh = Math.max(28, forestBridge.halfHeight * CELL * 2 + 18);
+
+    ctx.save();
+    ctx.translate(bx, by);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.24)';
+    ctx.fillRect(-bw / 2, -bh / 2 + 5, bw, bh);
+    ctx.fillStyle = '#5f4428';
+    ctx.fillRect(-bw / 2, -bh / 2, bw, bh);
+    ctx.fillStyle = '#7f6038';
+    for (let x = -bw / 2; x < bw / 2; x += 12) {
+      ctx.fillRect(x, -bh / 2, 8, bh);
+    }
+    ctx.fillStyle = '#3f2a18';
+    ctx.fillRect(-bw / 2, -bh / 2, bw, 4);
+    ctx.fillRect(-bw / 2, bh / 2 - 4, bw, 4);
+    ctx.restore();
+  }
+
+  ctx.restore();
+}
+
 function drawForestWorld() {
   const startCX = Math.max(0, Math.floor(cam.x / CELL) - 1);
   const startCY = Math.max(0, Math.floor(cam.y / CELL) - 1);
@@ -2080,6 +2493,8 @@ function drawForestWorld() {
       ctx.drawImage(getFloorTileForCell(cx, cy), 0, 0, CELL, CELL, wx, wy, CELL, CELL);
     }
   }
+
+  drawForestGroundDetails();
 
   for (let cy = startCY; cy < endCY; cy++) {
     for (let cx = startCX; cx < endCX; cx++) {
@@ -2311,6 +2726,34 @@ function drawVillageProps() {
       ctx.beginPath();
       ctx.ellipse(sx, sy - 2, prop.width / 4.2, prop.height / 4, 0, 0, Math.PI * 2);
       ctx.stroke();
+    } else if (prop.type === 'bush') {
+      const size = prop.size || 1;
+      const deep = prop.blocking ? 1 : 0.7;
+      ctx.shadowBlur = 12;
+      ctx.shadowColor = 'rgba(12, 42, 20, 0.35)';
+      ctx.fillStyle = `rgba(${Math.floor(28 + prop.tint * 18)}, ${Math.floor(52 + prop.tint * 24)}, ${Math.floor(24 + prop.tint * 16)}, 0.95)`;
+      ctx.beginPath();
+      ctx.arc(sx - 8 * size, sy + 3, 8 * size, 0, Math.PI * 2);
+      ctx.arc(sx + 7 * size, sy + 2, 9 * size, 0, Math.PI * 2);
+      ctx.arc(sx, sy - 5, 10 * size * deep, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(70, 94, 48, 0.2)';
+      ctx.beginPath();
+      ctx.arc(sx - 2, sy - 7, 5 * size, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (prop.type === 'log') {
+      ctx.translate(sx, sy + 3);
+      ctx.rotate(prop.angle || 0);
+      ctx.fillStyle = '#4c311c';
+      ctx.fillRect(-prop.width / 2, -prop.height / 2, prop.width, prop.height);
+      ctx.fillStyle = '#6d4726';
+      ctx.fillRect(-prop.width / 2 + 3, -prop.height / 2 + 2, prop.width - 6, prop.height - 4);
+      ctx.strokeStyle = 'rgba(32, 20, 10, 0.55)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-prop.width / 2 + 6, 0);
+      ctx.lineTo(prop.width / 2 - 6, 0);
+      ctx.stroke();
     } else if (prop.type === 'tent') {
       const blink = 0.55 + 0.45 * Math.sin(Date.now() / 600 + sx * 0.02);
       ctx.shadowBlur = 16;
@@ -2384,18 +2827,21 @@ function drawVillageHouses() {
     if (x > canvas.width + CELL || y > canvas.height + CELL || x + w < -CELL || y + h < -CELL) continue;
 
     ctx.save();
-    ctx.strokeStyle = 'rgba(30, 18, 10, 0.92)';
+    const roofTone = house.roofTone || 40;
+    const wallTone = house.wallTone || 54;
+    const glow = house.glow || 0.6;
+    ctx.strokeStyle = `rgba(${Math.max(20, roofTone - 4)}, ${Math.max(12, Math.floor(roofTone * 0.55))}, 10, 0.92)`;
     ctx.lineWidth = 4;
     ctx.strokeRect(x + 8, y + 8, w - 16, h - 16);
-    ctx.fillStyle = 'rgba(60, 44, 28, 0.22)';
+    ctx.fillStyle = `rgba(${wallTone}, ${Math.max(26, Math.floor(wallTone * 0.74))}, 28, 0.24)`;
     ctx.fillRect(x + 10, y + 10, w - 20, h - 20);
 
-    ctx.fillStyle = 'rgba(48, 24, 14, 0.44)';
+    ctx.fillStyle = `rgba(${roofTone}, ${Math.max(22, Math.floor(roofTone * 0.5))}, 14, 0.48)`;
     ctx.fillRect(x + 8, y + 6, w - 16, 14);
     ctx.fillStyle = 'rgba(24, 20, 16, 0.34)';
     ctx.fillRect(x + 16, y + 18, w - 32, h - 36);
 
-    ctx.fillStyle = 'rgba(255, 214, 120, 0.68)';
+    ctx.fillStyle = `rgba(255, 214, 120, ${glow})`;
     const midY = y + h / 2;
     ctx.fillRect(x + 14, midY - 10, 8, 12);
     ctx.fillRect(x + w - 22, midY - 10, 8, 12);
@@ -2896,8 +3342,11 @@ function drawMinimap() {
     for (let cx = 0; cx < COLS; cx++) {
       const bits = maze[cellIndex(cx, cy)];
       if (bits > 0) {
-        if (isSafeCell(cx, cy)) ctx.fillStyle = '#3f7c78';
+        if (currentLocationId === LOCATION_FOREST_VILLAGE && isRiverCell(cx, cy) && !isBridgeCell(cx, cy)) ctx.fillStyle = '#23556a';
+        else if (currentLocationId === LOCATION_FOREST_VILLAGE && isBridgeCell(cx, cy)) ctx.fillStyle = '#7b6643';
+        else if (isSafeCell(cx, cy)) ctx.fillStyle = '#3f7c78';
         else if (currentLocationId === LOCATION_FOREST_VILLAGE && isHouseCell(cx, cy)) ctx.fillStyle = '#705032';
+        else if (currentLocationId === LOCATION_FOREST_VILLAGE && isPathCell(cx, cy)) ctx.fillStyle = '#4e432b';
         else ctx.fillStyle = currentLocationId === LOCATION_FOREST_VILLAGE ? '#203425' : '#8a7a3e';
         ctx.fillRect(mx + cx * scx, my + cy * scy, scx, scy);
       }
