@@ -248,6 +248,8 @@ const MONSTER_START_CX = 4;
 const MONSTER_START_CY = 4;
 const EXIT_CX = COLS - 2;
 const EXIT_CY = ROWS - 2;
+const LOCATION_BACKROOMS = 'backrooms';
+const LOCATION_FOREST_VILLAGE = 'forestVillage';
 
 // ── Canvas sizing ────────────────────────────────────────────────────────────
 function resize() {
@@ -263,6 +265,8 @@ resize();
 let maze = new Uint8Array(COLS * ROWS); // 0 = all walls closed
 let currentWorldSeed = 0;
 let worldRandom = Math.random;
+let currentLocationId = LOCATION_BACKROOMS;
+let currentLocationName = 'BACKROOMS';
 
 const DIR = [
   { dx: 0, dy: -1, bit: 0, opp: 2 }, // N
@@ -280,6 +284,15 @@ function createSeededRandom(seed) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+function getLocationFromSeed(seed) {
+  return ((seed >>> 0) & 1) === 0 ? LOCATION_FOREST_VILLAGE : LOCATION_BACKROOMS;
+}
+
+function applyLocationTheme(locationId) {
+  currentLocationId = locationId;
+  currentLocationName = locationId === LOCATION_FOREST_VILLAGE ? 'FOREST VILLAGE' : 'BACKROOMS';
 }
 
 function cellIndex(cx, cy) {
@@ -428,6 +441,97 @@ faceCanvas.height = WALL_FACE;
   }
 })();
 
+// Forest village textures
+const forestFloorCanvas = document.createElement('canvas');
+forestFloorCanvas.width = forestFloorCanvas.height = CELL;
+(function buildForestFloor() {
+  const fc = forestFloorCanvas.getContext('2d');
+  fc.fillStyle = '#294b2c';
+  fc.fillRect(0, 0, CELL, CELL);
+  for (let i = 0; i < 170; i++) {
+    fc.fillStyle = `rgba(${40 + Math.floor(Math.random() * 45)}, ${90 + Math.floor(Math.random() * 70)}, ${35 + Math.floor(Math.random() * 30)}, ${0.12 + Math.random() * 0.18})`;
+    fc.fillRect(Math.random() * CELL, Math.random() * CELL, 2 + Math.random() * 4, 2 + Math.random() * 4);
+  }
+  for (let i = 0; i < 28; i++) {
+    fc.fillStyle = `rgba(90,70,38,${0.08 + Math.random() * 0.12})`;
+    fc.beginPath();
+    fc.arc(Math.random() * CELL, Math.random() * CELL, 5 + Math.random() * 12, 0, Math.PI * 2);
+    fc.fill();
+  }
+})();
+
+const forestWallCanvas = document.createElement('canvas');
+forestWallCanvas.width = forestWallCanvas.height = CELL;
+(function buildForestWall() {
+  const fc = forestWallCanvas.getContext('2d');
+  fc.fillStyle = '#18351d';
+  fc.fillRect(0, 0, CELL, CELL);
+  for (let i = 0; i < 140; i++) {
+    fc.fillStyle = `rgba(${20 + Math.floor(Math.random() * 20)}, ${70 + Math.floor(Math.random() * 70)}, ${25 + Math.floor(Math.random() * 25)}, ${0.16 + Math.random() * 0.2})`;
+    fc.fillRect(Math.random() * CELL, Math.random() * CELL, 2 + Math.random() * 6, 2 + Math.random() * 10);
+  }
+})();
+
+const forestFaceCanvas = document.createElement('canvas');
+forestFaceCanvas.width = CELL;
+forestFaceCanvas.height = WALL_FACE;
+(function buildForestFace() {
+  const fc = forestFaceCanvas.getContext('2d');
+  const grad = fc.createLinearGradient(0, 0, 0, WALL_FACE);
+  grad.addColorStop(0, '#315b2f');
+  grad.addColorStop(1, '#10230f');
+  fc.fillStyle = grad;
+  fc.fillRect(0, 0, CELL, WALL_FACE);
+  for (let px = 0; px < CELL; px += 8) {
+    fc.fillStyle = 'rgba(0,0,0,0.14)';
+    fc.fillRect(px, 0, 2, WALL_FACE);
+  }
+})();
+
+const houseFloorCanvas = document.createElement('canvas');
+houseFloorCanvas.width = houseFloorCanvas.height = CELL;
+(function buildHouseFloor() {
+  const fc = houseFloorCanvas.getContext('2d');
+  fc.fillStyle = '#6c4a2c';
+  fc.fillRect(0, 0, CELL, CELL);
+  for (let py = 0; py < CELL; py += 10) {
+    fc.fillStyle = 'rgba(0,0,0,0.12)';
+    fc.fillRect(0, py, CELL, 1);
+  }
+  for (let px = 0; px < CELL; px += 12) {
+    fc.fillStyle = 'rgba(255,220,150,0.05)';
+    fc.fillRect(px, 0, 1, CELL);
+  }
+})();
+
+const houseWallCanvas = document.createElement('canvas');
+houseWallCanvas.width = houseWallCanvas.height = CELL;
+(function buildHouseWall() {
+  const fc = houseWallCanvas.getContext('2d');
+  fc.fillStyle = '#8a5c33';
+  fc.fillRect(0, 0, CELL, CELL);
+  for (let py = 0; py < CELL; py += 7) {
+    fc.fillStyle = 'rgba(70,35,12,0.2)';
+    fc.fillRect(0, py, CELL, 1);
+  }
+})();
+
+const houseFaceCanvas = document.createElement('canvas');
+houseFaceCanvas.width = CELL;
+houseFaceCanvas.height = WALL_FACE;
+(function buildHouseFace() {
+  const fc = houseFaceCanvas.getContext('2d');
+  const grad = fc.createLinearGradient(0, 0, 0, WALL_FACE);
+  grad.addColorStop(0, '#a36b34');
+  grad.addColorStop(1, '#4f2f14');
+  fc.fillStyle = grad;
+  fc.fillRect(0, 0, CELL, WALL_FACE);
+  for (let py = 2; py < WALL_FACE; py += 5) {
+    fc.fillStyle = 'rgba(255,228,170,0.06)';
+    fc.fillRect(0, py, CELL, 1);
+  }
+})();
+
 // ── TV-static noise texture (pre-baked, tiled at render time) ────────────────
 const NOISE_SIZE = 256;
 const noiseCanvas = document.createElement('canvas');
@@ -513,9 +617,16 @@ const SAFE_ROOM_GAP = 6;
 const SAFE_ROOM_REPEL_DISTANCE = 18 * CELL;
 let safeCells = new Uint8Array(COLS * ROWS);
 let safeRooms = [];
+let houseCells = new Uint8Array(COLS * ROWS);
+let villageHouses = [];
+let villageProps = [];
 
 function isSafeCell(cx, cy) {
   return inBounds(cx, cy) && safeCells[cellIndex(cx, cy)] === 1;
+}
+
+function isHouseCell(cx, cy) {
+  return inBounds(cx, cy) && houseCells[cellIndex(cx, cy)] === 1;
 }
 
 function rectTooClose(ax, ay, aw, ah, bx, by, bw, bh, gap) {
@@ -603,6 +714,213 @@ function generateSafeRooms() {
   }
 }
 
+function clearCellConnections(cx, cy) {
+  const idx = cellIndex(cx, cy);
+  const bits = maze[idx];
+  for (const d of DIR) {
+    if (!(bits & (1 << d.bit))) continue;
+    const nx = cx + d.dx;
+    const ny = cy + d.dy;
+    if (!inBounds(nx, ny)) continue;
+    maze[cellIndex(nx, ny)] &= ~(1 << d.opp);
+  }
+  maze[idx] = 0;
+}
+
+function carveVillageHouse(x, y, w, h) {
+  for (let cy = y; cy < y + h; cy++) {
+    for (let cx = x; cx < x + w; cx++) {
+      clearCellConnections(cx, cy);
+      houseCells[cellIndex(cx, cy)] = 1;
+    }
+  }
+
+  for (let cy = y; cy < y + h; cy++) {
+    for (let cx = x; cx < x + w; cx++) {
+      if (cx + 1 < x + w) openBetweenCells(cx, cy, cx + 1, cy);
+      if (cy + 1 < y + h) openBetweenCells(cx, cy, cx, cy + 1);
+    }
+  }
+
+  const doors = [];
+  for (let cx = x + 1; cx < x + w - 1; cx++) {
+    doors.push({ cx, cy: y, bit: 0 });
+    doors.push({ cx, cy: y + h - 1, bit: 2 });
+  }
+  for (let cy = y + 1; cy < y + h - 1; cy++) {
+    doors.push({ cx: x, cy, bit: 3 });
+    doors.push({ cx: x + w - 1, cy, bit: 1 });
+  }
+
+  for (let i = doors.length - 1; i > 0; i--) {
+    const j = Math.floor(worldRandom() * (i + 1));
+    [doors[i], doors[j]] = [doors[j], doors[i]];
+  }
+
+  let opened = 0;
+  const usedSides = new Set();
+  for (const door of doors) {
+    const d = DIR[door.bit];
+    const nx = door.cx + d.dx;
+    const ny = door.cy + d.dy;
+    if (!inBounds(nx, ny) || isHouseCell(nx, ny)) continue;
+    if (usedSides.has(door.bit)) continue;
+    openPassage(door.cx, door.cy, door.bit);
+    usedSides.add(door.bit);
+    opened++;
+    if (opened >= 2) break;
+  }
+
+  villageHouses.push({
+    x,
+    y,
+    w,
+    h,
+    centerCX: x + ((w - 1) >> 1),
+    centerCY: y + ((h - 1) >> 1),
+  });
+}
+
+function generateVillageHouses() {
+  if (currentLocationId !== LOCATION_FOREST_VILLAGE) return;
+
+  let attempts = 0;
+  while (villageHouses.length < 8 && attempts < 700) {
+    attempts++;
+    const w = worldRandom() < 0.5 ? 3 : 4;
+    const h = worldRandom() < 0.5 ? 3 : 4;
+    const x = 2 + Math.floor(worldRandom() * (COLS - w - 4));
+    const y = 2 + Math.floor(worldRandom() * (ROWS - h - 4));
+    const centerCX = x + ((w - 1) >> 1);
+    const centerCY = y + ((h - 1) >> 1);
+
+    const playerDist = Math.hypot(centerCX - PLAYER_START_CX, centerCY - PLAYER_START_CY);
+    const exitDist = Math.hypot(centerCX - EXIT_CX, centerCY - EXIT_CY);
+    const monsterDist = Math.hypot(centerCX - MONSTER_START_CX, centerCY - MONSTER_START_CY);
+    if (playerDist < 9 || exitDist < 7 || monsterDist < 7) continue;
+
+    let blocked = false;
+    for (const room of safeRooms) {
+      if (rectTooClose(x, y, w, h, room.x, room.y, room.w, room.h, 4)) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+    for (const house of villageHouses) {
+      if (rectTooClose(x, y, w, h, house.x, house.y, house.w, house.h, 3)) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+
+    carveVillageHouse(x, y, w, h);
+  }
+}
+
+function isVillagePropPlacementAllowed(cx, cy, minDistance = 0) {
+  if (currentLocationId !== LOCATION_FOREST_VILLAGE) return false;
+  if (!inBounds(cx, cy) || !maze[cellIndex(cx, cy)]) return false;
+  if (isSafeCell(cx, cy) || isHouseCell(cx, cy)) return false;
+  if (Math.hypot(cx - PLAYER_START_CX, cy - PLAYER_START_CY) < minDistance) return false;
+  if (Math.hypot(cx - EXIT_CX, cy - EXIT_CY) < minDistance) return false;
+  if (Math.hypot(cx - MONSTER_START_CX, cy - MONSTER_START_CY) < minDistance) return false;
+  return !villageProps.some(prop => Math.hypot(prop.cx - cx, prop.cy - cy) < 1.2);
+}
+
+function pushVillageProp(prop) {
+  villageProps.push({
+    ...prop,
+    x: prop.cx * CELL + CELL / 2 + (prop.offsetX || 0),
+    y: prop.cy * CELL + CELL / 2 + (prop.offsetY || 0),
+  });
+}
+
+function generateVillageProps() {
+  villageProps = [];
+  if (currentLocationId !== LOCATION_FOREST_VILLAGE) return;
+
+  let treeAttempts = 0;
+  while (villageProps.filter(prop => prop.type === 'tree').length < 90 && treeAttempts < 1200) {
+    treeAttempts++;
+    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
+    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
+    if (!isVillagePropPlacementAllowed(cx, cy, 4)) continue;
+    pushVillageProp({
+      type: 'tree',
+      cx,
+      cy,
+      blocking: true,
+      shape: 'circle',
+      radius: 13 + worldRandom() * 3,
+      sway: worldRandom() * Math.PI * 2,
+    });
+  }
+
+  let campAttempts = 0;
+  while (villageProps.filter(prop => prop.type === 'campfire').length < 7 && campAttempts < 500) {
+    campAttempts++;
+    const cx = 3 + Math.floor(worldRandom() * (COLS - 6));
+    const cy = 3 + Math.floor(worldRandom() * (ROWS - 6));
+    if (!isVillagePropPlacementAllowed(cx, cy, 6)) continue;
+
+    pushVillageProp({
+      type: 'campfire',
+      cx,
+      cy,
+      blocking: true,
+      shape: 'circle',
+      radius: 9,
+      flicker: worldRandom() * Math.PI * 2,
+    });
+
+    const tentSpots = [
+      { cx: cx + 1, cy },
+      { cx: cx - 1, cy },
+      { cx, cy: cy + 1 },
+      { cx, cy: cy - 1 },
+    ].sort(() => worldRandom() - 0.5);
+
+    let tentsPlaced = 0;
+    for (const spot of tentSpots) {
+      if (!isVillagePropPlacementAllowed(spot.cx, spot.cy, 0)) continue;
+      pushVillageProp({
+        type: 'tent',
+        cx: spot.cx,
+        cy: spot.cy,
+        blocking: true,
+        shape: 'rect',
+        width: 30,
+        height: 20,
+      });
+      tentsPlaced++;
+      if (tentsPlaced >= 2) break;
+    }
+  }
+}
+
+function pointInVillageObstacle(wx, wy) {
+  if (currentLocationId !== LOCATION_FOREST_VILLAGE) return false;
+  for (const prop of villageProps) {
+    if (!prop.blocking) continue;
+    if (prop.shape === 'circle') {
+      if (Math.hypot(wx - prop.x, wy - prop.y) <= prop.radius) return true;
+      continue;
+    }
+    if (prop.shape === 'rect') {
+      const hw = prop.width / 2;
+      const hh = prop.height / 2;
+      if (wx >= prop.x - hw && wx <= prop.x + hw && wy >= prop.y - hh && wy <= prop.y + hh) return true;
+    }
+  }
+  return false;
+}
+
+function isBlockedNavigationCell(cx, cy) {
+  return pointInVillageObstacle(cx * CELL + CELL / 2, cy * CELL + CELL / 2);
+}
+
 // ── Almond water ──────────────────────────────────────────────────────────────
 const ALMOND_COUNT  = 80;
 const BOOST_MULT    = 1.7;
@@ -615,7 +933,7 @@ function spawnAlmondWaters() {
   const pool = [];
   for (let cy = 2; cy < ROWS - 2; cy++)
     for (let cx = 2; cx < COLS - 2; cx++)
-      if (maze[cellIndex(cx, cy)] > 0 && !isSafeCell(cx, cy)) pool.push({ cx, cy });
+      if (maze[cellIndex(cx, cy)] > 0 && !isSafeCell(cx, cy) && !pointInVillageObstacle(cx * CELL + CELL / 2, cy * CELL + CELL / 2)) pool.push({ cx, cy });
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(worldRandom() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -641,7 +959,7 @@ function spawnWeapons() {
   const pool = [];
   for (let cy = 2; cy < ROWS - 2; cy++)
     for (let cx = 2; cx < COLS - 2; cx++)
-      if (maze[cellIndex(cx, cy)] > 0 && !isSafeCell(cx, cy)) pool.push({ cx, cy });
+      if (maze[cellIndex(cx, cy)] > 0 && !isSafeCell(cx, cy) && !pointInVillageObstacle(cx * CELL + CELL / 2, cy * CELL + CELL / 2)) pool.push({ cx, cy });
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(worldRandom() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -692,9 +1010,13 @@ function updateAmmoHud() {
 function initializeWorld(seed) {
   currentWorldSeed = (seed >>> 0) || hashString(`world:${Date.now()}`);
   worldRandom = createSeededRandom(currentWorldSeed);
+  applyLocationTheme(getLocationFromSeed(currentWorldSeed));
   maze = new Uint8Array(COLS * ROWS);
   safeCells = new Uint8Array(COLS * ROWS);
   safeRooms = [];
+  houseCells = new Uint8Array(COLS * ROWS);
+  villageHouses = [];
+  villageProps = [];
   almondWaters = [];
   weapons = [];
   bullets = [];
@@ -706,6 +1028,8 @@ function initializeWorld(seed) {
   maze[cellIndex(EXIT_CX - 1, EXIT_CY)] |= 0b1111;
 
   generateSafeRooms();
+  generateVillageHouses();
+  generateVillageProps();
   spawnAlmondWaters();
   spawnWeapons();
 }
@@ -796,7 +1120,7 @@ function setMonsterGoal(cx, cy) {
 }
 
 function monsterCanUseCell(cx, cy) {
-  return inBounds(cx, cy) && !isSafeCell(cx, cy);
+  return inBounds(cx, cy) && !isSafeCell(cx, cy) && !isBlockedNavigationCell(cx, cy);
 }
 
 function chooseMonsterPatrolGoal(fromCX, fromCY) {
@@ -1267,6 +1591,7 @@ function isWall(wx, wy) {
 
 function pointInWall(wx, wy) {
   if (wx < 0 || wy < 0 || wx >= COLS * CELL || wy >= ROWS * CELL) return true;
+  if (pointInVillageObstacle(wx, wy)) return true;
   const cx = Math.floor(wx / CELL);
   const cy = Math.floor(wy / CELL);
   const lx = wx - cx * CELL; // local x within cell
@@ -1605,6 +1930,28 @@ function update(dt) {
   if (online.enabled) syncLocalPlayerToRoom();
 }
 
+function getFloorTileForCell(cx, cy) {
+  if (currentLocationId === LOCATION_FOREST_VILLAGE) {
+    return isHouseCell(cx, cy) ? houseFloorCanvas : forestFloorCanvas;
+  }
+  return floorCanvas;
+}
+
+function getWallTopTileForCell(cx, cy) {
+  if (currentLocationId === LOCATION_FOREST_VILLAGE) {
+    return isHouseCell(cx, cy) ? houseWallCanvas : forestWallCanvas;
+  }
+  return wallCanvas;
+}
+
+function getWallFaceTileForSegment(cx, cy, bit) {
+  if (currentLocationId !== LOCATION_FOREST_VILLAGE) return faceCanvas;
+  const d = DIR[bit];
+  const nx = cx + d.dx;
+  const ny = cy + d.dy;
+  return (isHouseCell(cx, cy) || isHouseCell(nx, ny)) ? houseFaceCanvas : forestFaceCanvas;
+}
+
 function drawMaze() {
   const startCX = Math.max(0, Math.floor(cam.x / CELL) - 1);
   const startCY = Math.max(0, Math.floor(cam.y / CELL) - 1);
@@ -1618,13 +1965,14 @@ function drawMaze() {
       const wy   = cy * CELL - cam.y;
       const bits = maze[cellIndex(cx, cy)];
       const pw   = CELL - WALL_T * 2; // passage / center width
+      const floorTile = getFloorTileForCell(cx, cy);
 
       // centre corridor
-      ctx.drawImage(floorCanvas, 0, 0, CELL, CELL, wx + WALL_T, wy + WALL_T, pw, pw);
-      if (bits & 1) ctx.drawImage(floorCanvas, 0, 0, CELL, CELL, wx + WALL_T, wy,              pw, WALL_T); // N
-      if (bits & 4) ctx.drawImage(floorCanvas, 0, 0, CELL, CELL, wx + WALL_T, wy + CELL - WALL_T, pw, WALL_T); // S
-      if (bits & 8) ctx.drawImage(floorCanvas, 0, 0, CELL, CELL, wx,          wy + WALL_T,    WALL_T, pw); // W
-      if (bits & 2) ctx.drawImage(floorCanvas, 0, 0, CELL, CELL, wx + CELL - WALL_T, wy + WALL_T, WALL_T, pw); // E
+      ctx.drawImage(floorTile, 0, 0, CELL, CELL, wx + WALL_T, wy + WALL_T, pw, pw);
+      if (bits & 1) ctx.drawImage(floorTile, 0, 0, CELL, CELL, wx + WALL_T, wy,              pw, WALL_T); // N
+      if (bits & 4) ctx.drawImage(floorTile, 0, 0, CELL, CELL, wx + WALL_T, wy + CELL - WALL_T, pw, WALL_T); // S
+      if (bits & 8) ctx.drawImage(floorTile, 0, 0, CELL, CELL, wx,          wy + WALL_T,    WALL_T, pw); // W
+      if (bits & 2) ctx.drawImage(floorTile, 0, 0, CELL, CELL, wx + CELL - WALL_T, wy + WALL_T, WALL_T, pw); // E
     }
   }
 
@@ -1636,47 +1984,48 @@ function drawMaze() {
       const wy   = cy * CELL - cam.y;
       const bits = maze[cellIndex(cx, cy)];
       const pw   = CELL - WALL_T * 2;
+      const cornerTopTile = getWallTopTileForCell(cx, cy);
 
       // Helper: draw wall top rect from wallCanvas
-      const wTop = (x, y, w, h) =>
-        ctx.drawImage(wallCanvas, 0, 0, CELL, CELL, x, y, w, h);
+      const wTop = (tile, x, y, w, h) =>
+        ctx.drawImage(tile, 0, 0, CELL, CELL, x, y, w, h);
 
       // Helper: draw wall face (south-facing, darker)
-      const wFace = (x, y, w) =>
-        ctx.drawImage(faceCanvas, 0, 0, CELL, WALL_FACE, x, y, w, WALL_FACE);
+      const wFace = (tile, x, y, w) =>
+        ctx.drawImage(tile, 0, 0, CELL, WALL_FACE, x, y, w, WALL_FACE);
 
       // ── Four corners (always solid walls) ───────────────────────────────
       // NW corner — top + face (faces south into cell)
-      wTop(wx,               wy, WALL_T, WALL_T);
-      wFace(wx,              wy + WALL_T, WALL_T);
+      wTop(cornerTopTile, wx,               wy, WALL_T, WALL_T);
+      wFace(getWallFaceTileForSegment(cx, cy, 0), wx, wy + WALL_T, WALL_T);
 
       // NE corner — top + face
-      wTop(wx + CELL - WALL_T, wy, WALL_T, WALL_T);
-      wFace(wx + CELL - WALL_T, wy + WALL_T, WALL_T);
+      wTop(cornerTopTile, wx + CELL - WALL_T, wy, WALL_T, WALL_T);
+      wFace(getWallFaceTileForSegment(cx, cy, 0), wx + CELL - WALL_T, wy + WALL_T, WALL_T);
 
       // SW corner — top only (face would point away from viewer)
-      wTop(wx,               wy + CELL - WALL_T, WALL_T, WALL_T);
+      wTop(cornerTopTile, wx,               wy + CELL - WALL_T, WALL_T, WALL_T);
 
       // SE corner — top only
-      wTop(wx + CELL - WALL_T, wy + CELL - WALL_T, WALL_T, WALL_T);
+      wTop(cornerTopTile, wx + CELL - WALL_T, wy + CELL - WALL_T, WALL_T, WALL_T);
 
       // ── Mid-wall segments ────────────────────────────────────────────────
       if (!(bits & 1)) {
         // North wall closed — top strip + south-facing face
-        wTop(wx + WALL_T, wy, pw, WALL_T);
-        wFace(wx + WALL_T, wy + WALL_T, pw);
+        wTop(getWallTopTileForCell(cx, cy), wx + WALL_T, wy, pw, WALL_T);
+        wFace(getWallFaceTileForSegment(cx, cy, 0), wx + WALL_T, wy + WALL_T, pw);
       }
       if (!(bits & 4)) {
         // South wall closed — top strip only (faces away)
-        wTop(wx + WALL_T, wy + CELL - WALL_T, pw, WALL_T);
+        wTop(getWallTopTileForCell(cx, cy), wx + WALL_T, wy + CELL - WALL_T, pw, WALL_T);
       }
       if (!(bits & 8)) {
         // West wall closed — vertical strip
-        wTop(wx, wy + WALL_T, WALL_T, pw);
+        wTop(getWallTopTileForCell(cx, cy), wx, wy + WALL_T, WALL_T, pw);
       }
       if (!(bits & 2)) {
         // East wall closed — vertical strip
-        wTop(wx + CELL - WALL_T, wy + WALL_T, WALL_T, pw);
+        wTop(getWallTopTileForCell(cx, cy), wx + CELL - WALL_T, wy + WALL_T, WALL_T, pw);
       }
     }
   }
@@ -1705,6 +2054,117 @@ function drawSafeRooms() {
     ctx.textAlign = 'center';
     ctx.fillStyle = 'rgba(220,255,250,0.95)';
     ctx.fillText('SAFE', rx + rw / 2, ry + rh / 2 + 5);
+    ctx.restore();
+  }
+}
+
+function drawVillageProps() {
+  if (currentLocationId !== LOCATION_FOREST_VILLAGE) return;
+  const orderedProps = villageProps.slice().sort((a, b) => a.y - b.y);
+
+  for (const prop of orderedProps) {
+    const sx = Math.round(prop.x - cam.x);
+    const sy = Math.round(prop.y - cam.y);
+    if (sx < -80 || sx > canvas.width + 80 || sy < -80 || sy > canvas.height + 80) continue;
+
+    ctx.save();
+
+    if (prop.type === 'tree') {
+      const sway = Math.sin(Date.now() / 900 + prop.sway) * 1.5;
+      ctx.fillStyle = '#4b2b14';
+      ctx.fillRect(sx - 4, sy + 6, 8, 18);
+      ctx.shadowBlur = 18;
+      ctx.shadowColor = 'rgba(22, 80, 34, 0.55)';
+      ctx.fillStyle = '#214f28';
+      ctx.beginPath();
+      ctx.arc(sx + sway, sy - 12, 16, 0, Math.PI * 2);
+      ctx.arc(sx - 12 + sway * 0.6, sy - 1, 12, 0, Math.PI * 2);
+      ctx.arc(sx + 12 + sway * 0.6, sy, 12, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (prop.type === 'tent') {
+      ctx.shadowBlur = 14;
+      ctx.shadowColor = 'rgba(120, 80, 36, 0.45)';
+      ctx.fillStyle = '#8f6a37';
+      ctx.beginPath();
+      ctx.moveTo(sx - 18, sy + 10);
+      ctx.lineTo(sx, sy - 12);
+      ctx.lineTo(sx + 18, sy + 10);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#5b3d1c';
+      ctx.fillRect(sx - 2, sy - 10, 4, 22);
+      ctx.strokeStyle = 'rgba(255,230,170,0.28)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(sx - 10, sy + 6);
+      ctx.lineTo(sx, sy - 4);
+      ctx.lineTo(sx + 10, sy + 6);
+      ctx.stroke();
+    } else if (prop.type === 'campfire') {
+      const flicker = 0.65 + 0.35 * Math.sin(Date.now() / 120 + prop.flicker);
+      ctx.shadowBlur = 24;
+      ctx.shadowColor = `rgba(255,120,40,${0.65 * flicker})`;
+      ctx.fillStyle = `rgba(255,120,30,${0.28 + 0.18 * flicker})`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#5e3618';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(sx - 10, sy + 7);
+      ctx.lineTo(sx + 8, sy - 5);
+      ctx.moveTo(sx - 8, sy - 4);
+      ctx.lineTo(sx + 10, sy + 8);
+      ctx.stroke();
+      ctx.fillStyle = '#ffb347';
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - 14);
+      ctx.lineTo(sx - 8, sy + 3);
+      ctx.lineTo(sx, sy - 2);
+      ctx.lineTo(sx + 8, sy + 4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#fff0a8';
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - 8);
+      ctx.lineTo(sx - 4, sy + 1);
+      ctx.lineTo(sx + 4, sy + 1);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+}
+
+function drawVillageHouses() {
+  if (currentLocationId !== LOCATION_FOREST_VILLAGE) return;
+  for (const house of villageHouses) {
+    const x = house.x * CELL - cam.x;
+    const y = house.y * CELL - cam.y;
+    const w = house.w * CELL;
+    const h = house.h * CELL;
+
+    if (x > canvas.width + CELL || y > canvas.height + CELL || x + w < -CELL || y + h < -CELL) continue;
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(50, 24, 10, 0.85)';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(x + 8, y + 8, w - 16, h - 16);
+    ctx.fillStyle = 'rgba(120, 72, 36, 0.12)';
+    ctx.fillRect(x + 10, y + 10, w - 20, h - 20);
+
+    // Roof accent near the top edge
+    ctx.fillStyle = 'rgba(80, 34, 16, 0.32)';
+    ctx.fillRect(x + 10, y + 10, w - 20, 10);
+
+    // Simple glowing windows on side walls
+    ctx.fillStyle = 'rgba(255, 220, 135, 0.85)';
+    const midY = y + h / 2;
+    ctx.fillRect(x + 14, midY - 10, 8, 12);
+    ctx.fillRect(x + w - 22, midY - 10, 8, 12);
+
     ctx.restore();
   }
 }
@@ -1894,6 +2354,70 @@ function drawBullets() {
   }
 }
 
+function getAimPreview() {
+  if (!shootActive) return null;
+  const len = Math.hypot(shootRawDX, shootRawDY);
+  if (len < SHOOT_JOY_RADIUS * 0.18) return null;
+
+  const dx = shootRawDX / len;
+  const dy = shootRawDY / len;
+  const step = 12;
+  const maxDistance = CELL * 9.5;
+  const points = [{ x: player.x, y: player.y }];
+  let x = player.x;
+  let y = player.y;
+  let hitMonster = false;
+
+  for (let dist = 0; dist < maxDistance; dist += step) {
+    x += dx * step;
+    y += dy * step;
+    if (pointInWall(x, y)) break;
+    points.push({ x, y });
+    if (monsterStunTime <= 0 && Math.hypot(x - monster.x, y - monster.y) < 22) {
+      hitMonster = true;
+      break;
+    }
+  }
+
+  return {
+    points,
+    hitMonster,
+    hasAmmo: ammo > 0,
+  };
+}
+
+function drawAimPreview() {
+  const preview = getAimPreview();
+  if (!preview || preview.points.length < 2) return;
+
+  const color = !preview.hasAmmo
+    ? 'rgba(150, 80, 80, 0.65)'
+    : preview.hitMonster
+      ? 'rgba(255, 120, 80, 0.92)'
+      : 'rgba(255, 210, 120, 0.82)';
+
+  ctx.save();
+  ctx.lineWidth = preview.hitMonster ? 3.5 : 2.5;
+  ctx.setLineDash([10, 8]);
+  ctx.strokeStyle = color;
+  ctx.shadowBlur = 14;
+  ctx.shadowColor = color;
+  ctx.beginPath();
+  ctx.moveTo(preview.points[0].x - cam.x, preview.points[0].y - cam.y);
+  for (let i = 1; i < preview.points.length; i++) {
+    ctx.lineTo(preview.points[i].x - cam.x, preview.points[i].y - cam.y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const end = preview.points[preview.points.length - 1];
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(end.x - cam.x, end.y - cam.y, preview.hitMonster ? 6 : 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
 function drawMonster() {
   const sx = Math.round(monster.x - cam.x);
   const sy = Math.round(monster.y - cam.y);
@@ -2035,11 +2559,11 @@ function drawFearEffects() {
 
 function drawBoostHUD() {
   if (speedBoostLeft <= 0) {
-    document.getElementById('hudLevel').textContent = 'LEVEL 0';
+    document.getElementById('hudLevel').textContent = currentLocationName;
     return;
   }
   const secs = Math.ceil(speedBoostLeft);
-  document.getElementById('hudLevel').textContent = `BOOST x1.7  ${secs}s`;
+  document.getElementById('hudLevel').textContent = `${currentLocationName}  BOOST x1.7 ${secs}s`;
 }
 
 function drawVignette() {
@@ -2086,6 +2610,7 @@ function drawWinScreen() {
   const elapsed = Math.floor((Date.now() - startTime) / 1000);
   const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
   const ss = String(elapsed % 60).padStart(2, '0');
+  ctx.fillText(currentLocationName, canvas.width/2, canvas.height/2 + 4);
   ctx.fillText(`Time: ${mm}:${ss}`, canvas.width/2, canvas.height/2 + 20);
   ctx.restore();
 }
@@ -2107,7 +2632,9 @@ function drawMinimap() {
     for (let cx = 0; cx < COLS; cx++) {
       const bits = maze[cellIndex(cx, cy)];
       if (bits > 0) {
-        ctx.fillStyle = isSafeCell(cx, cy) ? '#3f7c78' : '#8a7a3e';
+        if (isSafeCell(cx, cy)) ctx.fillStyle = '#3f7c78';
+        else if (currentLocationId === LOCATION_FOREST_VILLAGE && isHouseCell(cx, cy)) ctx.fillStyle = '#9a7340';
+        else ctx.fillStyle = currentLocationId === LOCATION_FOREST_VILLAGE ? '#345d33' : '#8a7a3e';
         ctx.fillRect(mx + cx * scx, my + cy * scy, scx, scy);
       }
     }
@@ -2192,8 +2719,11 @@ function render() {
   ctx.translate(Math.round(shakeX), Math.round(shakeY));
   drawMaze();
   drawSafeRooms();
+  drawVillageHouses();
+  drawVillageProps();
   drawAlmondWaters();
   drawWeapons();
+  drawAimPreview();
   drawExit();
   drawBullets();
   drawMonster();
