@@ -63,37 +63,81 @@
     pointer-events: none;
     z-index: 10;
   }
-  #joystickArea {
+  /* ── Joysticks ── */
+  .joystickArea {
     position: absolute;
-    bottom: calc(var(--safe-bottom) + 30px);
-    left: 50%;
-    transform: translateX(-50%);
+    bottom: calc(var(--safe-bottom) + 24px);
     z-index: 20;
     touch-action: none;
     user-select: none;
+    -webkit-user-select: none;
   }
-  #joystickBase {
-    width: 120px;
-    height: 120px;
+  #joystickArea      { left:  calc(var(--safe-left)  + 20px); }
+  #shootJoystickArea { right: calc(var(--safe-right) + 20px); }
+
+  .joystickBase {
+    width: 116px;
+    height: 116px;
     border-radius: 50%;
-    background: rgba(200, 185, 106, 0.12);
-    border: 2px solid rgba(200, 185, 106, 0.4);
     position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
   }
-  #joystickKnob {
-    width: 48px;
-    height: 48px;
+  #joystickBase {
+    background: rgba(200, 185, 106, 0.10);
+    border: 2px solid rgba(200, 185, 106, 0.38);
+  }
+  #shootBase {
+    background: rgba(220, 80, 60, 0.10);
+    border: 2px solid rgba(220, 80, 60, 0.38);
+  }
+  .joystickKnob {
+    width: 46px;
+    height: 46px;
     border-radius: 50%;
-    background: radial-gradient(circle at 40% 40%, rgba(200,185,106,0.9), rgba(140,120,40,0.7));
-    border: 2px solid rgba(200, 185, 106, 0.8);
     position: absolute;
     cursor: pointer;
     transition: none;
-    box-shadow: 0 0 12px rgba(200,185,106,0.4);
   }
+  #joystickKnob {
+    background: radial-gradient(circle at 40% 40%, rgba(200,185,106,0.9), rgba(140,120,40,0.7));
+    border: 2px solid rgba(200,185,106,0.8);
+    box-shadow: 0 0 12px rgba(200,185,106,0.35);
+  }
+  #shootKnob {
+    background: radial-gradient(circle at 40% 40%, rgba(230,100,80,0.9), rgba(160,50,30,0.8));
+    border: 2px solid rgba(230,100,80,0.8);
+    box-shadow: 0 0 12px rgba(230,80,60,0.45);
+  }
+  #shootLabel {
+    position: absolute;
+    bottom: -20px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px;
+    color: rgba(230,100,80,0.7);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  #ammoHud {
+    position: absolute;
+    bottom: calc(var(--safe-bottom) + 148px);
+    right: calc(var(--safe-right) + 20px);
+    z-index: 21;
+    pointer-events: none;
+    display: flex;
+    gap: 5px;
+    align-items: center;
+  }
+  .ammoBullet {
+    width: 8px; height: 16px;
+    border-radius: 4px 4px 2px 2px;
+    background: #e6644a;
+    box-shadow: 0 0 6px rgba(230,100,80,0.6);
+    transition: opacity 0.15s;
+  }
+  .ammoBullet.spent { background: #3a2a20; box-shadow: none; }
   #message {
     position: absolute;
     top: 50%;
@@ -206,11 +250,18 @@
     <span id="hudPos"></span>
     <span id="hudTime">00:00</span>
   </div>
-  <div id="joystickArea">
-    <div id="joystickBase">
-      <div id="joystickKnob"></div>
+  <div id="joystickArea" class="joystickArea">
+    <div id="joystickBase" class="joystickBase">
+      <div id="joystickKnob" class="joystickKnob"></div>
     </div>
   </div>
+  <div id="shootJoystickArea" class="joystickArea">
+    <div id="shootBase" class="joystickBase">
+      <div id="shootKnob" class="joystickKnob"></div>
+    </div>
+    <div id="shootLabel">FIRE</div>
+  </div>
+  <div id="ammoHud"></div>
   <div id="message"></div>
   <div id="lobbyOverlay">
     <div class="lobbyCard">

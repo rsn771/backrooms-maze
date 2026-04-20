@@ -630,6 +630,65 @@ function spawnAlmondWaters() {
   }
 }
 
+// ── Weapons ───────────────────────────────────────────────────────────────────
+const WEAPON_COUNT = 60;
+let weapons = [];
+let ammo = 0; // shots in hand
+const MAX_AMMO = 5;
+
+function spawnWeapons() {
+  weapons = [];
+  const pool = [];
+  for (let cy = 2; cy < ROWS - 2; cy++)
+    for (let cx = 2; cx < COLS - 2; cx++)
+      if (maze[cellIndex(cx, cy)] > 0 && !isSafeCell(cx, cy)) pool.push({ cx, cy });
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(worldRandom() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  // Skip first slots used by almond waters
+  const start = Math.min(ALMOND_COUNT, pool.length);
+  for (let i = start; i < Math.min(start + WEAPON_COUNT, pool.length); i++) {
+    weapons.push({
+      x: pool[i].cx * CELL + CELL / 2,
+      y: pool[i].cy * CELL + CELL / 2,
+      bob: worldRandom() * Math.PI * 2,
+      picked: false,
+    });
+  }
+}
+
+// ── Bullets ───────────────────────────────────────────────────────────────────
+const BULLET_SPEED  = 10;
+const BULLET_RADIUS = 6;
+const STUN_DURATION = 3;
+let bullets = [];
+let monsterStunTime = 0;
+
+function fireBullet(angle) {
+  if (ammo <= 0) return;
+  ammo--;
+  updateAmmoHud();
+  bullets.push({
+    x: player.x,
+    y: player.y,
+    vx: Math.cos(angle) * BULLET_SPEED,
+    vy: Math.sin(angle) * BULLET_SPEED,
+    life: 1.2, // seconds
+  });
+}
+
+function updateAmmoHud() {
+  const el = document.getElementById('ammoHud');
+  if (!el) return;
+  el.innerHTML = '';
+  for (let i = 0; i < MAX_AMMO; i++) {
+    const b = document.createElement('div');
+    b.className = 'ammoBullet' + (i >= ammo ? ' spent' : '');
+    el.appendChild(b);
+  }
+}
+
 function initializeWorld(seed) {
   currentWorldSeed = (seed >>> 0) || hashString(`world:${Date.now()}`);
   worldRandom = createSeededRandom(currentWorldSeed);
@@ -637,6 +696,8 @@ function initializeWorld(seed) {
   safeCells = new Uint8Array(COLS * ROWS);
   safeRooms = [];
   almondWaters = [];
+  weapons = [];
+  bullets = [];
 
   generateMaze();
 
@@ -646,6 +707,7 @@ function initializeWorld(seed) {
 
   generateSafeRooms();
   spawnAlmondWaters();
+  spawnWeapons();
 }
 
 // ── Monster ───────────────────────────────────────────────────────────────────
@@ -806,6 +868,12 @@ function restartGame({ resetSharedState = !online.enabled } = {}) {
   speedBoostLeft = 0;
   playerDead  = false;
   deathTimer  = 0;
+  // Reset weapon state
+  ammo = 0;
+  bullets = [];
+  monsterStunTime = 0;
+  for (const w of weapons) w.picked = false;
+  updateAmmoHud();
   if (resetSharedState) {
     monster.x = MONSTER_START_CX * CELL + CELL / 2;
     monster.y = MONSTER_START_CY * CELL + CELL / 2;
@@ -1125,6 +1193,57 @@ joystickBase.addEventListener('pointermove', e => {
 joystickBase.addEventListener('pointerup',     () => onJoyEnd());
 joystickBase.addEventListener('pointercancel', () => onJoyEnd());
 
+// ── Shoot joystick ────────────────────────────────────────────────────────────
+const shootBase      = document.getElementById('shootBase');
+const shootKnob      = document.getElementById('shootKnob');
+const SHOOT_JOY_RADIUS = 36;
+let shootActive = false;
+let shootStartX = 0, shootStartY = 0;
+let shootRawDX = 0, shootRawDY = 0; // clamped knob offsets in px
+
+shootBase.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  shootBase.setPointerCapture(e.pointerId);
+  const r = shootBase.getBoundingClientRect();
+  shootStartX = r.left + r.width / 2;
+  shootStartY = r.top + r.height / 2;
+  shootActive = true;
+  shootRawDX = 0; shootRawDY = 0;
+  shootKnob.style.transform = 'translate(0,0)';
+});
+
+shootBase.addEventListener('pointermove', e => {
+  if (!shootActive) return;
+  e.preventDefault();
+  let dx = e.clientX - shootStartX;
+  let dy = e.clientY - shootStartY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist > SHOOT_JOY_RADIUS) { dx *= SHOOT_JOY_RADIUS / dist; dy *= SHOOT_JOY_RADIUS / dist; }
+  shootRawDX = dx;
+  shootRawDY = dy;
+  shootKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+});
+
+function onShootEnd() {
+  if (!shootActive) return;
+  shootActive = false;
+  // Only fire if dragged far enough (≥25% of radius)
+  const nx = shootRawDX / SHOOT_JOY_RADIUS;
+  const ny = shootRawDY / SHOOT_JOY_RADIUS;
+  if (Math.sqrt(nx * nx + ny * ny) > 0.25) {
+    fireBullet(Math.atan2(ny, nx));
+  }
+  shootRawDX = 0; shootRawDY = 0;
+  shootKnob.style.transform = 'translate(0,0)';
+}
+
+shootBase.addEventListener('pointerup',     () => onShootEnd());
+shootBase.addEventListener('pointercancel', () => {
+  shootActive = false;
+  shootRawDX = 0; shootRawDY = 0;
+  shootKnob.style.transform = 'translate(0,0)';
+});
+
 // ── Collision helpers ─────────────────────────────────────────────────────────
 function cellPassable(cx, cy) {
   if (cx < 0 || cy < 0 || cx >= COLS || cy >= ROWS) return false;
@@ -1189,6 +1308,7 @@ let playerWasInSafeRoom = false;
   initializeWorld(hashString(`solo:${Date.now()}`));
   const patrolGoal = chooseMonsterPatrolGoal(MONSTER_START_CX, MONSTER_START_CY);
   setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
+  updateAmmoHud();
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
@@ -1200,6 +1320,9 @@ function update(dt) {
     online.syncTimer = Math.max(0, online.syncTimer - dt);
     online.monsterSyncTimer = Math.max(0, online.monsterSyncTimer - dt);
   }
+
+  // Stun countdown
+  monsterStunTime = Math.max(0, monsterStunTime - dt);
 
   if (gameWon) return;
 
@@ -1403,8 +1526,10 @@ function update(dt) {
     }
 
     const mspd = monster.isChasing ? MONSTER_SPD_CHASE : MONSTER_SPD_PATROL;
-    monster.x += monster.dx * mspd;
-    monster.y += monster.dy * mspd;
+    if (monsterStunTime <= 0) {
+      monster.x += monster.dx * mspd;
+      monster.y += monster.dy * mspd;
+    }
 
     if (online.enabled) {
       if (online.monsterSyncTimer <= 0) {
@@ -1438,6 +1563,42 @@ function update(dt) {
     playerDead = true;
     deathTimer = DEATH_DURATION;
     if (online.enabled) syncLocalPlayerToRoom(true);
+  }
+
+  // ── Weapon pickups ────────────────────────────────────────────────────────
+  for (const w of weapons) {
+    if (w.picked) continue;
+    if (Math.hypot(player.x - w.x, player.y - w.y) < CELL * 0.55) {
+      w.picked = true;
+      ammo = Math.min(MAX_AMMO, ammo + 1);
+      updateAmmoHud();
+    }
+  }
+
+  // ── Bullet updates ────────────────────────────────────────────────────────
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.life -= dt;
+    if (b.life <= 0) { bullets.splice(i, 1); continue; }
+
+    const nbx = b.x + b.vx;
+    const nby = b.y + b.vy;
+
+    if (pointInWall(nbx, nby)) {
+      bullets.splice(i, 1);
+      continue;
+    }
+    b.x = nbx;
+    b.y = nby;
+
+    // Monster collision (hit radius ~22px — monster torso is ~10px wide but 80px tall)
+    if (monsterStunTime <= 0 && Math.hypot(b.x - monster.x, b.y - monster.y) < 22) {
+      monsterStunTime = STUN_DURATION;
+      monster.isChasing = false;
+      monster.dx = 0;
+      monster.dy = 0;
+      bullets.splice(i, 1);
+    }
   }
 
   playerWasInSafeRoom = playerInSafeRoom;
@@ -1677,6 +1838,62 @@ function drawAlmondWaters() {
   }
 }
 
+function drawWeapons() {
+  const t = Date.now() / 700;
+  for (const w of weapons) {
+    if (w.picked) continue;
+    const sx = Math.round(w.x - cam.x);
+    const sy = Math.round(w.y - cam.y);
+    if (sx < -30 || sx > canvas.width + 30 || sy < -30 || sy > canvas.height + 30) continue;
+
+    const bob  = Math.sin(t + w.bob) * 3;
+    const glow = 0.4 + 0.6 * Math.abs(Math.sin(t * 1.3 + w.bob));
+
+    ctx.save();
+    ctx.shadowBlur  = 10;
+    ctx.shadowColor = `rgba(230,100,80,${glow})`;
+
+    // pixel-art handgun (20×12 px, centred on sx,sy+bob)
+    const gx = sx - 10;
+    const gy = sy - 6 + bob;
+    // barrel
+    ctx.fillStyle = '#999990';
+    ctx.fillRect(gx,      gy + 2, 14, 4);
+    // muzzle
+    ctx.fillStyle = '#bbbbaa';
+    ctx.fillRect(gx,      gy + 2, 2, 2);
+    // slide / top
+    ctx.fillStyle = '#777768';
+    ctx.fillRect(gx + 2,  gy,     10, 6);
+    // grip
+    ctx.fillStyle = '#4a3020';
+    ctx.fillRect(gx + 7,  gy + 6, 5, 7);
+    // trigger guard
+    ctx.fillStyle = '#666655';
+    ctx.fillRect(gx + 8,  gy + 7, 3, 3);
+    // highlight dot
+    ctx.fillStyle = 'rgba(255,255,220,0.6)';
+    ctx.fillRect(gx + 3,  gy + 1, 2, 1);
+
+    ctx.restore();
+  }
+}
+
+function drawBullets() {
+  for (const b of bullets) {
+    const sx = Math.round(b.x - cam.x);
+    const sy = Math.round(b.y - cam.y);
+    ctx.save();
+    ctx.shadowBlur  = 8;
+    ctx.shadowColor = '#ffaa44';
+    ctx.fillStyle   = '#ffee88';
+    ctx.beginPath();
+    ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
 function drawMonster() {
   const sx = Math.round(monster.x - cam.x);
   const sy = Math.round(monster.y - cam.y);
@@ -1726,6 +1943,34 @@ function drawMonster() {
   ctx.fillRect(sx + 1, by + 3, 2, 3);
 
   ctx.restore();
+
+  // Stun effect — blue ring + spinning stars above head
+  if (monsterStunTime > 0) {
+    const stunPulse = 0.5 + 0.5 * Math.sin(Date.now() / 90);
+    ctx.save();
+    ctx.shadowBlur  = 18;
+    ctx.shadowColor = '#44aaff';
+    ctx.strokeStyle = `rgba(120,200,255,${0.6 + stunPulse * 0.4})`;
+    ctx.lineWidth   = 2;
+    ctx.beginPath();
+    ctx.arc(sx, sy - BH / 2, BH / 2 + 8, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    // Stars orbiting above head
+    const angle = Date.now() / 250;
+    const stars = ['★', '★', '★'];
+    ctx.font = '11px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let si = 0; si < stars.length; si++) {
+      const a = angle + (si * Math.PI * 2) / stars.length;
+      const ox = Math.cos(a) * 14;
+      const oy = Math.sin(a) * 6 - 4;
+      ctx.fillStyle = '#ffff44';
+      ctx.fillText(stars[si], sx + ox, by - 10 + oy);
+    }
+    ctx.restore();
+  }
 }
 
 function drawFearEffects() {
@@ -1948,7 +2193,9 @@ function render() {
   drawMaze();
   drawSafeRooms();
   drawAlmondWaters();
+  drawWeapons();
   drawExit();
+  drawBullets();
   drawMonster();
   drawRemotePlayers();
   drawPlayer();
