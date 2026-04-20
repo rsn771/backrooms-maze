@@ -2,6 +2,83 @@
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
+const tg = window.Telegram?.WebApp ?? null;
+
+let fullscreenSupported = true;
+
+function safeTgCall(fn) {
+  try {
+    return fn();
+  } catch {
+    return undefined;
+  }
+}
+
+function getViewportHeight() {
+  const telegramHeight = Math.round(tg?.viewportStableHeight || tg?.viewportHeight || 0);
+  if (telegramHeight > 0) return telegramHeight;
+  return Math.max(window.innerHeight, document.documentElement.clientHeight);
+}
+
+function setViewportVar(name, value) {
+  document.documentElement.style.setProperty(name, `${Math.max(0, Math.round(value || 0))}px`);
+}
+
+function syncTelegramViewport() {
+  const safeArea = tg?.contentSafeAreaInset || tg?.safeAreaInset || {};
+  setViewportVar('--app-height', getViewportHeight());
+  setViewportVar('--safe-top', safeArea.top);
+  setViewportVar('--safe-right', safeArea.right);
+  setViewportVar('--safe-bottom', safeArea.bottom);
+  setViewportVar('--safe-left', safeArea.left);
+  resize();
+}
+
+function requestTelegramFullscreen() {
+  if (!tg) return;
+  safeTgCall(() => tg.expand());
+  safeTgCall(() => tg.disableVerticalSwipes?.());
+  if (!fullscreenSupported || tg.isFullscreen) return;
+  safeTgCall(() => tg.requestFullscreen?.());
+}
+
+function initTelegramWebApp() {
+  syncTelegramViewport();
+
+  if (!tg) {
+    window.addEventListener('resize', syncTelegramViewport);
+    window.addEventListener('orientationchange', syncTelegramViewport);
+    return;
+  }
+
+  safeTgCall(() => tg.ready());
+  safeTgCall(() => tg.setHeaderColor?.('#000000'));
+  safeTgCall(() => tg.setBackgroundColor?.('#000000'));
+
+  requestTelegramFullscreen();
+
+  safeTgCall(() => tg.onEvent?.('viewportChanged', syncTelegramViewport));
+  safeTgCall(() => tg.onEvent?.('safeAreaChanged', syncTelegramViewport));
+  safeTgCall(() => tg.onEvent?.('contentSafeAreaChanged', syncTelegramViewport));
+  safeTgCall(() => tg.onEvent?.('fullscreenChanged', syncTelegramViewport));
+  safeTgCall(() => tg.onEvent?.('fullscreenFailed', ({ error } = {}) => {
+    if (error === 'UNSUPPORTED') fullscreenSupported = false;
+    syncTelegramViewport();
+  }));
+  safeTgCall(() => tg.onEvent?.('activated', () => {
+    syncTelegramViewport();
+    requestTelegramFullscreen();
+  }));
+
+  window.addEventListener('resize', syncTelegramViewport);
+  window.addEventListener('orientationchange', () => {
+    syncTelegramViewport();
+    requestTelegramFullscreen();
+  });
+  document.addEventListener('pointerdown', requestTelegramFullscreen, { once: true, passive: true });
+}
+
+initTelegramWebApp();
 
 // ── Config ──────────────────────────────────────────────────────────────────
 const CELL         = 64;  // pixels per maze cell
@@ -15,7 +92,7 @@ const SCALE        = 1;
 // ── Canvas sizing ────────────────────────────────────────────────────────────
 function resize() {
   canvas.width  = window.innerWidth;
-  canvas.height = window.innerHeight;
+  canvas.height = getViewportHeight();
 }
 window.addEventListener('resize', () => { resize(); });
 resize();
