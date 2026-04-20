@@ -50,9 +50,14 @@ const online = {
   sharedPickedWaters: {},
   winState: null,
   safeFlags: {},
+  remoteVisuals: {},
+  lastSentSnapshot: null,
 };
 
 let fullscreenSupported = true;
+const REMOTE_SYNC_INTERVAL_MOVING = 0.05;
+const REMOTE_SYNC_INTERVAL_IDLE = 0.12;
+const REMOTE_EXTRAPOLATION_MAX = 0.12;
 
 function safeTgCall(fn) {
   try {
@@ -1233,11 +1238,11 @@ function generateVillageProps() {
 
   let treeCount = 0;
   let treeAttempts = 0;
-  while (treeCount < 250 && treeAttempts < 5200) {
+  while (treeCount < 380 && treeAttempts < 7600) {
     treeAttempts++;
     const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
     const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
-    if (!isVillagePropPlacementAllowed(cx, cy, 4, 1.02, { avoidPaths: true, pathGap: 0 })) continue;
+    if (!isVillagePropPlacementAllowed(cx, cy, 4, 0.96, { avoidPaths: true, pathGap: 0 })) continue;
     if (hasMarkedCellNear(forestRiverCells, cx, cy, 1)) continue;
     const dead = worldRandom() < 0.16;
     pushVillageProp({
@@ -1246,9 +1251,9 @@ function generateVillageProps() {
       cy,
       blocking: true,
       shape: 'circle',
-      radius: dead ? 10 + worldRandom() * 3 : 12 + worldRandom() * 6,
+      radius: dead ? 10 + worldRandom() * 3 : 13 + worldRandom() * 7,
       sway: worldRandom() * Math.PI * 2,
-      size: 0.9 + worldRandom() * 0.45,
+      size: 1.15 + worldRandom() * 0.55,
     });
     treeCount++;
   }
@@ -1684,6 +1689,104 @@ function getLocalPlayerSnapshot() {
   };
 }
 
+function syncRemoteVisuals(playersSnapshot = {}) {
+  const now = Date.now();
+  const nextVisuals = {};
+
+  for (const [uid, playerData] of Object.entries(playersSnapshot)) {
+    if (uid === online.localUid) continue;
+
+    const targetX = playerData.x ?? (PLAYER_START_CX * CELL + CELL / 2);
+    const targetY = playerData.y ?? (PLAYER_START_CY * CELL + CELL / 2);
+    const serverTime = playerData.lastUpdate || now;
+    const prev = online.remoteVisuals[uid];
+
+    let displayX = targetX;
+    let displayY = targetY;
+    let velocityX = 0;
+    let velocityY = 0;
+
+    if (prev) {
+      displayX = prev.displayX;
+      displayY = prev.displayY;
+      velocityX = prev.velocityX || 0;
+      velocityY = prev.velocityY || 0;
+
+      if (serverTime === prev.serverTime && targetX === prev.targetX && targetY === prev.targetY) {
+        nextVisuals[uid] = {
+          ...prev,
+          facing: playerData.facing ?? prev.facing ?? 1,
+          frame: playerData.frame ?? prev.frame ?? 0,
+          moving: playerData.moving ?? prev.moving ?? false,
+          alive: playerData.alive !== false,
+          name: playerData.name || prev.name || shortNameForPlayer(uid),
+          color: playerData.color || prev.color || colorForPlayer(uid),
+        };
+        continue;
+      }
+
+      const dtServer = Math.min(0.25, Math.max(0.016, (serverTime - (prev.serverTime || serverTime)) / 1000));
+      const dx = targetX - prev.targetX;
+      const dy = targetY - prev.targetY;
+      velocityX = dx / dtServer;
+      velocityY = dy / dtServer;
+
+      const teleportDist = Math.hypot(targetX - prev.displayX, targetY - prev.displayY);
+      if (teleportDist > CELL * 3.5 || playerData.alive === false) {
+        displayX = targetX;
+        displayY = targetY;
+        velocityX = 0;
+        velocityY = 0;
+      }
+    }
+
+    nextVisuals[uid] = {
+      uid,
+      targetX,
+      targetY,
+      displayX,
+      displayY,
+      velocityX,
+      velocityY,
+      serverTime,
+      receivedAt: now,
+      facing: playerData.facing ?? prev?.facing ?? 1,
+      frame: playerData.frame ?? prev?.frame ?? 0,
+      moving: playerData.moving ?? prev?.moving ?? false,
+      alive: playerData.alive !== false,
+      name: playerData.name || shortNameForPlayer(uid),
+      color: playerData.color || colorForPlayer(uid),
+    };
+  }
+
+  online.remoteVisuals = nextVisuals;
+}
+
+function updateRemoteVisuals(dt) {
+  if (!online.enabled) return;
+
+  const smoothing = 1 - Math.exp(-dt * 16);
+  const now = Date.now();
+
+  for (const remote of Object.values(online.remoteVisuals)) {
+    if (!remote.alive) continue;
+
+    const extrapolation = Math.min(REMOTE_EXTRAPOLATION_MAX, Math.max(0, (now - remote.receivedAt) / 1000));
+    const predictedX = remote.targetX + remote.velocityX * extrapolation;
+    const predictedY = remote.targetY + remote.velocityY * extrapolation;
+
+    const snapDist = Math.hypot(predictedX - remote.displayX, predictedY - remote.displayY);
+    if (snapDist > CELL * 2.25) {
+      remote.displayX = predictedX;
+      remote.displayY = predictedY;
+      continue;
+    }
+
+    remote.displayX += (predictedX - remote.displayX) * smoothing;
+    remote.displayY += (predictedY - remote.displayY) * smoothing;
+  }
+}
+
 function applySharedStateToLocalWorld() {
   if (!online.enabled) return;
   const pickedIds = online.sharedPickedWaters || {};
@@ -1753,6 +1856,7 @@ function bindRoomListeners(roomId) {
 
   online.roomListeners.push(onValue(playersRef, snapshot => {
     online.players = snapshot.val() || {};
+    syncRemoteVisuals(online.players);
     renderPlayerRoster();
     claimHostIfNeeded().catch(() => {});
   }));
@@ -1845,6 +1949,8 @@ async function joinRoom(roomId, { create = false, locationId = null } = {}) {
   online.monsterSnapshot = null;
   online.winState = null;
   online.safeFlags = {};
+  online.remoteVisuals = {};
+  online.lastSentSnapshot = null;
 
   updateRoomShareUi();
   roomCodeInput.value = roomId;
@@ -1864,11 +1970,18 @@ async function joinRoom(roomId, { create = false, locationId = null } = {}) {
 
 async function syncLocalPlayerToRoom(force = false) {
   if (!online.enabled || !firebaseReady || !online.roomId || !online.localUid) return;
-  if (!force && online.syncTimer > 0) return;
-  online.syncTimer = 0.08;
-
   const snapshot = getLocalPlayerSnapshot();
+  const prev = online.lastSentSnapshot;
+  const stateChanged = !prev ||
+    snapshot.moving !== prev.moving ||
+    snapshot.facing !== prev.facing ||
+    snapshot.alive !== prev.alive ||
+    snapshot.inSafeRoom !== prev.inSafeRoom;
+  if (!force && !stateChanged && online.syncTimer > 0) return;
+  online.syncTimer = snapshot.moving ? REMOTE_SYNC_INTERVAL_MOVING : REMOTE_SYNC_INTERVAL_IDLE;
+
   online.players[online.localUid] = snapshot;
+  online.lastSentSnapshot = snapshot;
   updateData(ref(firebaseDb, `rooms/${online.roomId}/players/${online.localUid}`), snapshot).catch(() => {});
 }
 
@@ -2101,6 +2214,7 @@ function update(dt) {
   if (online.enabled) {
     online.syncTimer = Math.max(0, online.syncTimer - dt);
     online.monsterSyncTimer = Math.max(0, online.monsterSyncTimer - dt);
+    updateRemoteVisuals(dt);
   }
 
   // Stun countdown
@@ -2672,26 +2786,41 @@ function drawVillageProps() {
     ctx.save();
 
     if (prop.type === 'tree') {
-      const sway = Math.sin(Date.now() / 900 + prop.sway) * 1.4;
+      const sway = Math.round(Math.sin(Date.now() / 900 + prop.sway) * 1.2);
       const size = prop.size || 1;
-      ctx.fillStyle = '#2b180d';
-      ctx.fillRect(sx - 3 * size, sy + 2, 6 * size, 20 * size);
+      const trunkW = Math.max(6, Math.round(6 * size));
+      const trunkH = Math.max(24, Math.round(24 * size));
+      const trunkX = Math.round(sx - trunkW / 2);
+      const trunkY = Math.round(sy - trunkH + 8);
+      const topX = Math.round(sx + sway);
+      const baseY = Math.round(sy + 6);
+
+      ctx.fillStyle = '#2a180c';
+      ctx.fillRect(trunkX, trunkY, trunkW, trunkH);
+      ctx.fillStyle = '#3d2413';
+      ctx.fillRect(trunkX + 1, trunkY, 2, trunkH);
       ctx.shadowBlur = 20;
       ctx.shadowColor = 'rgba(14, 60, 30, 0.55)';
-      ctx.fillStyle = '#16311c';
-      ctx.beginPath();
-      ctx.moveTo(sx + sway, sy - 24 * size);
-      ctx.lineTo(sx - 18 * size + sway * 0.5, sy - 1 * size);
-      ctx.lineTo(sx + 18 * size + sway * 0.5, sy - 1 * size);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = '#1e4123';
-      ctx.beginPath();
-      ctx.moveTo(sx + sway * 0.6, sy - 11 * size);
-      ctx.lineTo(sx - 21 * size + sway * 0.35, sy + 14 * size);
-      ctx.lineTo(sx + 21 * size + sway * 0.35, sy + 14 * size);
-      ctx.closePath();
-      ctx.fill();
+      const layers = [
+        { y: -58, w: 10, h: 8, color: '#132a17' },
+        { y: -48, w: 16, h: 8, color: '#16311b' },
+        { y: -38, w: 22, h: 8, color: '#18361f' },
+        { y: -28, w: 28, h: 9, color: '#1d3f24' },
+        { y: -16, w: 34, h: 10, color: '#224a2a' },
+        { y: -3,  w: 40, h: 10, color: '#27532f' },
+      ];
+
+      for (const layer of layers) {
+        const w = Math.max(8, Math.round(layer.w * size));
+        const h = Math.max(6, Math.round(layer.h * size));
+        const x = Math.round(topX - w / 2);
+        const y = Math.round(baseY + layer.y * size);
+        ctx.fillStyle = layer.color;
+        ctx.fillRect(x, y, w, h);
+      }
+
+      ctx.fillStyle = 'rgba(130, 170, 116, 0.1)';
+      ctx.fillRect(Math.round(topX - 2), Math.round(baseY - 48 * size), 4, Math.round(34 * size));
     } else if (prop.type === 'deadTree') {
       const sway = Math.sin(Date.now() / 1100 + prop.sway) * 1.2;
       ctx.strokeStyle = '#24160e';
@@ -2966,11 +3095,11 @@ function drawCharacterSprite({ x, y, facing, frame, name, accent, local = false 
 
 function drawRemotePlayers() {
   if (!online.enabled) return;
-  for (const [uid, playerData] of Object.entries(online.players)) {
-    if (uid === online.localUid || playerData.alive === false) continue;
+  for (const [uid, playerData] of Object.entries(online.remoteVisuals)) {
+    if (playerData.alive === false) continue;
     drawCharacterSprite({
-      x: playerData.x ?? PLAYER_START_CX * CELL + CELL / 2,
-      y: playerData.y ?? PLAYER_START_CY * CELL + CELL / 2,
+      x: playerData.displayX ?? playerData.targetX ?? PLAYER_START_CX * CELL + CELL / 2,
+      y: playerData.displayY ?? playerData.targetY ?? PLAYER_START_CY * CELL + CELL / 2,
       facing: playerData.facing ?? 1,
       frame: playerData.frame ?? 0,
       name: playerData.name || shortNameForPlayer(uid),
@@ -3378,11 +3507,11 @@ function drawMinimap() {
   ctx.fill();
 
   if (online.enabled) {
-    for (const [uid, playerData] of Object.entries(online.players)) {
+    for (const [uid, playerData] of Object.entries(online.remoteVisuals)) {
       if (uid === online.localUid || playerData.alive === false) continue;
       ctx.fillStyle = playerData.color || colorForPlayer(uid);
-      const rdx = ((playerData.x ?? 0) / CELL) * scx;
-      const rdy = ((playerData.y ?? 0) / CELL) * scy;
+      const rdx = ((playerData.displayX ?? playerData.targetX ?? 0) / CELL) * scx;
+      const rdy = ((playerData.displayY ?? playerData.targetY ?? 0) / CELL) * scy;
       ctx.beginPath();
       ctx.arc(mx + rdx, my + rdy, 2.2, 0, Math.PI * 2);
       ctx.fill();
@@ -3476,6 +3605,8 @@ function startSoloMode() {
   online.sharedPickedWaters = {};
   online.winState = null;
   online.safeFlags = {};
+  online.remoteVisuals = {};
+  online.lastSentSnapshot = null;
   cleanupRoomListeners();
   initializeWorld(hashString(`solo:${Date.now()}`));
   restartGame({ resetSharedState: true });
