@@ -108,6 +108,94 @@
     display: none;
     line-height: 1.6;
   }
+  #lobbyOverlay {
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    background:
+      radial-gradient(circle at top, rgba(200, 185, 106, 0.14), transparent 38%),
+      linear-gradient(180deg, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0.88));
+  }
+  #lobbyOverlay.hidden,
+  #roomShareBox.hidden {
+    display: none;
+  }
+  .lobbyCard {
+    width: min(92vw, 420px);
+    border: 1px solid rgba(200, 185, 106, 0.28);
+    background: rgba(10, 10, 8, 0.92);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.46);
+    border-radius: 24px;
+    padding: 18px;
+    color: #efe6b2;
+    display: grid;
+    gap: 12px;
+  }
+  .lobbyTitle {
+    font-size: 24px;
+    font-weight: 700;
+    color: #fff2a7;
+    text-shadow: 0 0 12px rgba(255, 242, 167, 0.28);
+  }
+  .lobbyText, #lobbyStatus {
+    color: rgba(239, 230, 178, 0.82);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .lobbyActions, .joinRow, #roomShareBox {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .joinRow {
+    grid-template-columns: 1fr auto;
+  }
+  .lobbyBtn, #roomCodeInput {
+    appearance: none;
+    border: 1px solid rgba(200, 185, 106, 0.34);
+    background: rgba(27, 25, 16, 0.94);
+    color: #fff1b5;
+    border-radius: 16px;
+    min-height: 48px;
+    padding: 0 14px;
+    font: inherit;
+  }
+  .lobbyBtn {
+    cursor: pointer;
+    font-weight: 700;
+  }
+  .lobbyBtn.primary {
+    background: linear-gradient(180deg, rgba(215, 197, 120, 0.96), rgba(155, 128, 42, 0.92));
+    color: #161106;
+    border-color: rgba(255, 231, 145, 0.62);
+  }
+  .lobbyBtn.secondary {
+    background: rgba(24, 23, 17, 0.92);
+  }
+  #roomCodeInput {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+  }
+  #roomCodeDisplay {
+    border: 1px dashed rgba(200, 185, 106, 0.34);
+    border-radius: 16px;
+    padding: 14px;
+    text-align: center;
+    font-size: 18px;
+    letter-spacing: 0.18em;
+    color: #fff1b5;
+    background: rgba(19, 18, 12, 0.9);
+  }
+  #playerRoster {
+    display: grid;
+    gap: 6px;
+    color: rgba(239, 230, 178, 0.72);
+    font-size: 13px;
+    min-height: 18px;
+  }
 </style>
 </head>
 <body>
@@ -124,8 +212,28 @@
     </div>
   </div>
   <div id="message"></div>
+  <div id="lobbyOverlay">
+    <div class="lobbyCard">
+      <div class="lobbyTitle">Backrooms Maze</div>
+      <div class="lobbyText">Co-op mode for up to 4 players. Create a room, share the code or link, and survive the maze together.</div>
+      <div id="lobbyStatus">Connecting co-op services…</div>
+      <div class="lobbyActions">
+        <button id="createRoomBtn" class="lobbyBtn primary" type="button">Create Room</button>
+        <button id="soloBtn" class="lobbyBtn secondary" type="button">Solo</button>
+      </div>
+      <div class="joinRow">
+        <input id="roomCodeInput" type="text" placeholder="ROOM CODE" maxlength="8" autocomplete="off" />
+        <button id="joinRoomBtn" class="lobbyBtn secondary" type="button">Join</button>
+      </div>
+      <div id="roomShareBox" class="hidden">
+        <div id="roomCodeDisplay">------</div>
+        <button id="copyRoomLinkBtn" class="lobbyBtn secondary" type="button">Copy Link</button>
+      </div>
+      <div id="playerRoster"></div>
+    </div>
+  </div>
 </div>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src="game.js"></script>
+<script type="module" src="game.js"></script>
 </body>
 </html>

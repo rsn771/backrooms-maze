@@ -1,8 +1,54 @@
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-app.js';
+import { getAuth, onAuthStateChanged, signInAnonymously } from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-auth.js';
+import { getDatabase, get, onDisconnect, onValue, ref, runTransaction, update as updateData } from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-database.js';
+
 // BACKROOMS MAZE - Pixel Art TG Mini App Game
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const tg = window.Telegram?.WebApp ?? null;
+const lobbyOverlay = document.getElementById('lobbyOverlay');
+const lobbyStatus = document.getElementById('lobbyStatus');
+const createRoomBtn = document.getElementById('createRoomBtn');
+const joinRoomBtn = document.getElementById('joinRoomBtn');
+const soloBtn = document.getElementById('soloBtn');
+const roomCodeInput = document.getElementById('roomCodeInput');
+const roomShareBox = document.getElementById('roomShareBox');
+const roomCodeDisplay = document.getElementById('roomCodeDisplay');
+const copyRoomLinkBtn = document.getElementById('copyRoomLinkBtn');
+const playerRoster = document.getElementById('playerRoster');
+
+const MAX_PLAYERS = 4;
+const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const PLAYER_COLORS = ['#e66f5d', '#5fb0ff', '#7ce38b', '#d08cff'];
+
+let firebaseApp = null;
+let firebaseAuth = null;
+let firebaseDb = null;
+let firebaseReady = false;
+let firebaseDisabledReason = '';
+let authReadyResolve;
+const authReady = new Promise(resolve => { authReadyResolve = resolve; });
+
+const online = {
+  enabled: false,
+  roomId: '',
+  roomSeed: 0,
+  roomState: 'idle',
+  joinLink: '',
+  hostUid: '',
+  localUid: '',
+  localName: '',
+  localColor: PLAYER_COLORS[0],
+  players: {},
+  roomListeners: [],
+  syncTimer: 0,
+  monsterSyncTimer: 0,
+  monsterSnapshot: null,
+  sharedPickedWaters: {},
+  winState: null,
+  safeFlags: {},
+};
 
 let fullscreenSupported = true;
 
@@ -80,6 +126,114 @@ function initTelegramWebApp() {
 
 initTelegramWebApp();
 
+function setLobbyStatus(text) {
+  lobbyStatus.textContent = text;
+}
+
+function setOverlayVisible(visible) {
+  lobbyOverlay.classList.toggle('hidden', !visible);
+}
+
+function sanitizeRoomCode(value) {
+  return (value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 8);
+}
+
+function generateRoomCode() {
+  let result = '';
+  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  for (const byte of bytes) result += ROOM_CODE_ALPHABET[byte % ROOM_CODE_ALPHABET.length];
+  return result;
+}
+
+function hashString(value) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function colorForPlayer(id) {
+  return PLAYER_COLORS[hashString(id) % PLAYER_COLORS.length];
+}
+
+function shortNameForPlayer(id) {
+  return `P${(hashString(id) % 90) + 10}`;
+}
+
+function getRoomUrl(roomId = online.roomId) {
+  const url = new URL(window.location.href);
+  if (roomId) url.searchParams.set('room', roomId);
+  else url.searchParams.delete('room');
+  return url.toString();
+}
+
+function updateRoomShareUi() {
+  const activeRoom = online.roomId || sanitizeRoomCode(roomCodeInput.value);
+  if (!activeRoom) {
+    roomShareBox.classList.add('hidden');
+    roomCodeDisplay.textContent = '------';
+    return;
+  }
+  roomShareBox.classList.remove('hidden');
+  roomCodeDisplay.textContent = activeRoom;
+}
+
+function renderPlayerRoster() {
+  const players = Object.values(online.players).sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0));
+  if (!players.length) {
+    playerRoster.textContent = online.enabled ? 'Waiting for players…' : '';
+    return;
+  }
+
+  playerRoster.innerHTML = players.map(playerData => {
+    const marker = playerData.uid === online.localUid ? ' (you)' : '';
+    const crown = playerData.uid === online.hostUid ? ' [host]' : '';
+    return `<div>${playerData.name || 'Explorer'}${marker}${crown}</div>`;
+  }).join('');
+}
+
+async function loadFirebaseConfig() {
+  try {
+    const response = await fetch('/api/firebase-config', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } catch {
+    return { enabled: false, reason: 'Firebase config route is unavailable.' };
+  }
+}
+
+async function initFirebase() {
+  const config = await loadFirebaseConfig();
+  if (!config?.enabled) {
+    firebaseDisabledReason = config?.reason || 'Firebase is not configured yet.';
+    setLobbyStatus(`${firebaseDisabledReason} You can still start solo mode.`);
+    return;
+  }
+
+  firebaseApp = initializeApp(config);
+  firebaseAuth = getAuth(firebaseApp);
+  firebaseDb = getDatabase(firebaseApp);
+
+  onAuthStateChanged(firebaseAuth, user => {
+    if (!user) return;
+    online.localUid = user.uid;
+    online.localName = shortNameForPlayer(user.uid);
+    online.localColor = colorForPlayer(user.uid);
+    firebaseReady = true;
+    authReadyResolve(user);
+    updateRoomShareUi();
+    renderPlayerRoster();
+    setLobbyStatus('Create a room or join one to start co-op.');
+  });
+
+  await signInAnonymously(firebaseAuth);
+}
+
 // ── Config ──────────────────────────────────────────────────────────────────
 const CELL         = 64;  // pixels per maze cell
 const COLS         = 75;  // maze width in cells
@@ -106,7 +260,9 @@ resize();
 // ── Maze generation (recursive backtracker) ──────────────────────────────────
 // Each cell stores which walls are OPEN (passage exists)
 // Bits: 0=N, 1=E, 2=S, 3=W
-const maze = new Uint8Array(COLS * ROWS); // 0 = all walls closed
+let maze = new Uint8Array(COLS * ROWS); // 0 = all walls closed
+let currentWorldSeed = 0;
+let worldRandom = Math.random;
 
 const DIR = [
   { dx: 0, dy: -1, bit: 0, opp: 2 }, // N
@@ -114,6 +270,17 @@ const DIR = [
   { dx: 0, dy: 1,  bit: 2, opp: 0 }, // S
   { dx: -1, dy: 0, bit: 3, opp: 1 }, // W
 ];
+
+function createSeededRandom(seed) {
+  let state = seed >>> 0 || 1;
+  return () => {
+    state += 0x6D2B79F5;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 function cellIndex(cx, cy) {
   return cy * COLS + cx;
@@ -152,7 +319,7 @@ function generateMaze() {
   while (stack.length > 0) {
     const cur = stack[stack.length - 1];
     // shuffle directions
-    const dirs = DIR.slice().sort(() => Math.random() - 0.5);
+    const dirs = DIR.slice().sort(() => worldRandom() - 0.5);
     let moved = false;
     for (const d of dirs) {
       const nx = cur.x + d.dx;
@@ -172,9 +339,9 @@ function generateMaze() {
 
   // Add extra loops so the maze feels more open / backrooms-like
   for (let i = 0; i < COLS * ROWS * 0.15; i++) {
-    const x = 1 + Math.floor(Math.random() * (COLS - 2));
-    const y = 1 + Math.floor(Math.random() * (ROWS - 2));
-    const d = DIR[Math.floor(Math.random() * 4)];
+    const x = 1 + Math.floor(worldRandom() * (COLS - 2));
+    const y = 1 + Math.floor(worldRandom() * (ROWS - 2));
+    const d = DIR[Math.floor(worldRandom() * 4)];
     const nx = x + d.dx, ny = y + d.dy;
     if (nx >= 0 && ny >= 0 && nx < COLS && ny < ROWS) {
       maze[y * COLS + x] |= (1 << d.bit);
@@ -182,7 +349,6 @@ function generateMaze() {
     }
   }
 }
-generateMaze();
 
 // ── Precompute tile textures ─────────────────────────────────────────────────
 // Floor tile — carpet pattern
@@ -340,18 +506,13 @@ const EXIT = {
   y: EXIT_CY * CELL + CELL / 2,
 };
 
-// Make sure exit cell is open
-maze[cellIndex(EXIT_CX, EXIT_CY)] |= 0b1111;
-maze[cellIndex(EXIT_CX, EXIT_CY - 1)] |= 0b1111;
-maze[cellIndex(EXIT_CX - 1, EXIT_CY)] |= 0b1111;
-
 // ── Safe rooms ───────────────────────────────────────────────────────────────
 const SAFE_ROOM_COUNT = 5;
 const SAFE_ROOM_SIZE = 3;
 const SAFE_ROOM_GAP = 6;
 const SAFE_ROOM_REPEL_DISTANCE = 18 * CELL;
-const safeCells = new Uint8Array(COLS * ROWS);
-const safeRooms = [];
+let safeCells = new Uint8Array(COLS * ROWS);
+let safeRooms = [];
 
 function isSafeCell(cx, cy) {
   return inBounds(cx, cy) && safeCells[cellIndex(cx, cy)] === 1;
@@ -386,7 +547,7 @@ function carveSafeRoom(x, y, w, h) {
   }
 
   for (let i = doorCandidates.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(worldRandom() * (i + 1));
     [doorCandidates[i], doorCandidates[j]] = [doorCandidates[j], doorCandidates[i]];
   }
 
@@ -419,8 +580,8 @@ function generateSafeRooms() {
   let attempts = 0;
   while (safeRooms.length < SAFE_ROOM_COUNT && attempts < 600) {
     attempts++;
-    const x = 2 + Math.floor(Math.random() * (COLS - SAFE_ROOM_SIZE - 4));
-    const y = 2 + Math.floor(Math.random() * (ROWS - SAFE_ROOM_SIZE - 4));
+    const x = 2 + Math.floor(worldRandom() * (COLS - SAFE_ROOM_SIZE - 4));
+    const y = 2 + Math.floor(worldRandom() * (ROWS - SAFE_ROOM_SIZE - 4));
     const centerCX = x + ((SAFE_ROOM_SIZE - 1) >> 1);
     const centerCY = y + ((SAFE_ROOM_SIZE - 1) >> 1);
 
@@ -442,33 +603,50 @@ function generateSafeRooms() {
   }
 }
 
-generateSafeRooms();
-
 // ── Almond water ──────────────────────────────────────────────────────────────
 const ALMOND_COUNT  = 80;
 const BOOST_MULT    = 1.7;
 const BOOST_SECONDS = 10;
 let   speedBoostLeft = 0;
 
-const almondWaters = [];
-(function spawnAlmondWaters() {
+let almondWaters = [];
+function spawnAlmondWaters() {
+  almondWaters = [];
   const pool = [];
   for (let cy = 2; cy < ROWS - 2; cy++)
     for (let cx = 2; cx < COLS - 2; cx++)
       if (maze[cellIndex(cx, cy)] > 0 && !isSafeCell(cx, cy)) pool.push({ cx, cy });
   for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(worldRandom() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
   for (let i = 0; i < Math.min(ALMOND_COUNT, pool.length); i++) {
     almondWaters.push({
       x: pool[i].cx * CELL + CELL / 2,
       y: pool[i].cy * CELL + CELL / 2,
-      bob: Math.random() * Math.PI * 2,
+      bob: worldRandom() * Math.PI * 2,
       picked: false,
     });
   }
-})();
+}
+
+function initializeWorld(seed) {
+  currentWorldSeed = (seed >>> 0) || hashString(`world:${Date.now()}`);
+  worldRandom = createSeededRandom(currentWorldSeed);
+  maze = new Uint8Array(COLS * ROWS);
+  safeCells = new Uint8Array(COLS * ROWS);
+  safeRooms = [];
+  almondWaters = [];
+
+  generateMaze();
+
+  maze[cellIndex(EXIT_CX, EXIT_CY)] |= 0b1111;
+  maze[cellIndex(EXIT_CX, EXIT_CY - 1)] |= 0b1111;
+  maze[cellIndex(EXIT_CX - 1, EXIT_CY)] |= 0b1111;
+
+  generateSafeRooms();
+  spawnAlmondWaters();
+}
 
 // ── Monster ───────────────────────────────────────────────────────────────────
 const FEAR_RANGE          = 10 * CELL;
@@ -620,25 +798,270 @@ function relocateMonsterAwayFromPlayer(playerCX, playerCY) {
 }
 
 // ── Restart ───────────────────────────────────────────────────────────────────
-function restartGame() {
+function restartGame({ resetSharedState = !online.enabled } = {}) {
   player.x = PLAYER_START_CX * CELL + CELL / 2;
   player.y = PLAYER_START_CY * CELL + CELL / 2;
   player.frame = 0;
-  monster.x = MONSTER_START_CX * CELL + CELL / 2;
-  monster.y = MONSTER_START_CY * CELL + CELL / 2;
-  monster.dx = 1;
-  monster.dy = 0;
-  monster.fearLevel = 0;
-  monster.isChasing = false;
   playerWasInSafeRoom = false;
-  const patrolGoal = chooseMonsterPatrolGoal(MONSTER_START_CX, MONSTER_START_CY);
-  setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
   speedBoostLeft = 0;
   playerDead  = false;
   deathTimer  = 0;
-  startTime   = Date.now();
-  gameWon     = false;
-  for (const aw of almondWaters) aw.picked = false;
+  if (resetSharedState) {
+    monster.x = MONSTER_START_CX * CELL + CELL / 2;
+    monster.y = MONSTER_START_CY * CELL + CELL / 2;
+    monster.dx = 1;
+    monster.dy = 0;
+    monster.fearLevel = 0;
+    monster.isChasing = false;
+    const patrolGoal = chooseMonsterPatrolGoal(MONSTER_START_CX, MONSTER_START_CY);
+    setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
+    startTime = Date.now();
+    gameWon = false;
+    for (const aw of almondWaters) aw.picked = false;
+  }
+}
+
+function getLocalPlayerSnapshot() {
+  const cx = (player.x / CELL) | 0;
+  const cy = (player.y / CELL) | 0;
+  return {
+    uid: online.localUid,
+    name: online.localName,
+    color: online.localColor,
+    joinedAt: online.players[online.localUid]?.joinedAt || Date.now(),
+    x: Math.round(player.x),
+    y: Math.round(player.y),
+    facing: player.facing,
+    frame: player.frame,
+    moving: player.moving,
+    alive: !playerDead,
+    inSafeRoom: isSafeCell(cx, cy),
+    boostUntil: speedBoostLeft > 0 ? Date.now() + Math.round(speedBoostLeft * 1000) : 0,
+    lastUpdate: Date.now(),
+  };
+}
+
+function applySharedStateToLocalWorld() {
+  if (!online.enabled) return;
+  const pickedIds = online.sharedPickedWaters || {};
+  for (let i = 0; i < almondWaters.length; i++) {
+    almondWaters[i].picked = pickedIds[i] === true;
+  }
+
+  if (!online.hostUid || online.hostUid !== online.localUid) {
+    if (online.monsterSnapshot) {
+      monster.x = online.monsterSnapshot.x ?? monster.x;
+      monster.y = online.monsterSnapshot.y ?? monster.y;
+      monster.dx = online.monsterSnapshot.dx ?? monster.dx;
+      monster.dy = online.monsterSnapshot.dy ?? monster.dy;
+      monster.fearLevel = online.monsterSnapshot.fearLevel ?? monster.fearLevel;
+      monster.isChasing = !!online.monsterSnapshot.isChasing;
+    }
+  }
+
+  if (online.winState?.won) {
+    gameWon = true;
+  }
+}
+
+function cleanupRoomListeners() {
+  for (const unsubscribe of online.roomListeners) unsubscribe();
+  online.roomListeners = [];
+}
+
+async function claimHostIfNeeded() {
+  if (!online.enabled || !online.roomId || !online.localUid || !firebaseDb) return;
+  const livePlayers = online.players;
+  if (online.hostUid && livePlayers[online.hostUid]) return;
+
+  const hostRef = ref(firebaseDb, `rooms/${online.roomId}/hostUid`);
+  const result = await runTransaction(hostRef, current => {
+    if (current && livePlayers[current]) return;
+    return online.localUid;
+  });
+
+  if (result.committed && result.snapshot.val() === online.localUid) {
+    online.hostUid = online.localUid;
+    onDisconnect(hostRef).remove().catch(() => {});
+    renderPlayerRoster();
+  }
+}
+
+function bindRoomListeners(roomId) {
+  cleanupRoomListeners();
+
+  const metaRef = ref(firebaseDb, `rooms/${roomId}/meta`);
+  const playersRef = ref(firebaseDb, `rooms/${roomId}/players`);
+  const hostRef = ref(firebaseDb, `rooms/${roomId}/hostUid`);
+  const sharedRef = ref(firebaseDb, `rooms/${roomId}/shared`);
+
+  online.roomListeners.push(onValue(metaRef, snapshot => {
+    const meta = snapshot.val();
+    if (!meta) return;
+    if (meta.seed && meta.seed !== online.roomSeed) {
+      online.roomSeed = meta.seed >>> 0;
+      initializeWorld(online.roomSeed);
+      restartGame({ resetSharedState: true });
+    }
+  }));
+
+  online.roomListeners.push(onValue(playersRef, snapshot => {
+    online.players = snapshot.val() || {};
+    renderPlayerRoster();
+    claimHostIfNeeded().catch(() => {});
+  }));
+
+  online.roomListeners.push(onValue(hostRef, snapshot => {
+    online.hostUid = snapshot.val() || '';
+    renderPlayerRoster();
+    claimHostIfNeeded().catch(() => {});
+  }));
+
+  online.roomListeners.push(onValue(sharedRef, snapshot => {
+    const shared = snapshot.val() || {};
+    online.monsterSnapshot = shared.monster || null;
+    online.sharedPickedWaters = shared.pickedWaters || {};
+    online.winState = shared.win || null;
+    applySharedStateToLocalWorld();
+  }));
+}
+
+async function joinRoom(roomId, { create = false } = {}) {
+  roomId = sanitizeRoomCode(roomId);
+  if (!roomId) {
+    setLobbyStatus('Enter a valid room code.');
+    return false;
+  }
+  if (!firebaseReady) {
+    setLobbyStatus(firebaseDisabledReason || 'Co-op backend is not ready yet.');
+    return false;
+  }
+
+  await authReady;
+
+  setLobbyStatus(create ? 'Creating room…' : 'Joining room…');
+
+  const metaRef = ref(firebaseDb, `rooms/${roomId}/meta`);
+  const seed = hashString(`${roomId}:${Date.now()}:${online.localUid}`);
+
+  if (create) {
+    await runTransaction(metaRef, current => current || {
+      seed,
+      createdAt: Date.now(),
+      maxPlayers: MAX_PLAYERS,
+    });
+  }
+
+  const metaSnapshot = await get(metaRef);
+  if (!metaSnapshot.exists()) {
+    setLobbyStatus('Room not found.');
+    return false;
+  }
+
+  const roomMeta = metaSnapshot.val();
+  const playersRef = ref(firebaseDb, `rooms/${roomId}/players`);
+  const joinedAt = Date.now();
+  const joinResult = await runTransaction(playersRef, current => {
+    current ||= {};
+    if (!current[online.localUid] && Object.keys(current).length >= MAX_PLAYERS) return;
+    const existing = current[online.localUid] || {};
+    current[online.localUid] = {
+      uid: online.localUid,
+      name: existing.name || online.localName,
+      color: existing.color || online.localColor,
+      joinedAt: existing.joinedAt || joinedAt,
+      x: existing.x ?? (PLAYER_START_CX * CELL + CELL / 2),
+      y: existing.y ?? (PLAYER_START_CY * CELL + CELL / 2),
+      facing: existing.facing ?? 1,
+      frame: existing.frame ?? 0,
+      moving: false,
+      alive: existing.alive ?? true,
+      inSafeRoom: existing.inSafeRoom ?? false,
+      boostUntil: existing.boostUntil ?? 0,
+      lastUpdate: Date.now(),
+    };
+    return current;
+  });
+
+  if (!joinResult.committed) {
+    setLobbyStatus('Room is full. Max 4 players.');
+    return false;
+  }
+
+  online.enabled = true;
+  online.roomId = roomId;
+  online.roomSeed = roomMeta.seed >>> 0;
+  online.joinLink = getRoomUrl(roomId);
+  online.sharedPickedWaters = {};
+  online.monsterSnapshot = null;
+  online.winState = null;
+  online.safeFlags = {};
+
+  updateRoomShareUi();
+  roomCodeInput.value = roomId;
+  window.history.replaceState({}, '', online.joinLink);
+
+  const localPlayerRef = ref(firebaseDb, `rooms/${roomId}/players/${online.localUid}`);
+  onDisconnect(localPlayerRef).remove().catch(() => {});
+
+  bindRoomListeners(roomId);
+  initializeWorld(online.roomSeed);
+  restartGame({ resetSharedState: true });
+  await claimHostIfNeeded();
+  setOverlayVisible(false);
+  setLobbyStatus(`Connected to room ${roomId}.`);
+  return true;
+}
+
+async function syncLocalPlayerToRoom(force = false) {
+  if (!online.enabled || !firebaseReady || !online.roomId || !online.localUid) return;
+  if (!force && online.syncTimer > 0) return;
+  online.syncTimer = 0.08;
+
+  const snapshot = getLocalPlayerSnapshot();
+  online.players[online.localUid] = snapshot;
+  updateData(ref(firebaseDb, `rooms/${online.roomId}/players/${online.localUid}`), snapshot).catch(() => {});
+}
+
+function listAlivePlayersForMonster() {
+  if (!online.enabled) {
+    const cx = (player.x / CELL) | 0;
+    const cy = (player.y / CELL) | 0;
+    return [{
+      uid: 'local',
+      x: player.x,
+      y: player.y,
+      inSafeRoom: isSafeCell(cx, cy),
+      alive: !playerDead,
+    }];
+  }
+
+  const players = [];
+  for (const [uid, playerData] of Object.entries(online.players)) {
+    const isLocal = uid === online.localUid;
+    const px = isLocal ? player.x : (playerData.x ?? PLAYER_START_CX * CELL + CELL / 2);
+    const py = isLocal ? player.y : (playerData.y ?? PLAYER_START_CY * CELL + CELL / 2);
+    const cx = (px / CELL) | 0;
+    const cy = (py / CELL) | 0;
+    players.push({
+      uid,
+      x: px,
+      y: py,
+      inSafeRoom: isLocal ? isSafeCell(cx, cy) : !!playerData.inSafeRoom,
+      alive: isLocal ? !playerDead : playerData.alive !== false,
+    });
+  }
+  return players;
+}
+
+function getNearestMonsterTarget(players) {
+  let best = null;
+  for (const candidate of players) {
+    if (!candidate.alive || candidate.inSafeRoom) continue;
+    const dist = Math.hypot(candidate.x - monster.x, candidate.y - monster.y);
+    if (!best || dist < best.dist) best = { ...candidate, dist };
+  }
+  return best;
 }
 
 // ── Input ─────────────────────────────────────────────────────────────────────
@@ -763,6 +1186,7 @@ let startTime = Date.now();
 let gameWon = false;
 let playerWasInSafeRoom = false;
 {
+  initializeWorld(hashString(`solo:${Date.now()}`));
   const patrolGoal = chooseMonsterPatrolGoal(MONSTER_START_CX, MONSTER_START_CY);
   setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
 }
@@ -771,12 +1195,21 @@ let playerWasInSafeRoom = false;
 let lastTime = 0;
 
 function update(dt) {
+  applySharedStateToLocalWorld();
+  if (online.enabled) {
+    online.syncTimer = Math.max(0, online.syncTimer - dt);
+    online.monsterSyncTimer = Math.max(0, online.monsterSyncTimer - dt);
+  }
+
   if (gameWon) return;
 
   // Death countdown → restart
   if (playerDead) {
     deathTimer -= dt;
-    if (deathTimer <= 0) restartGame();
+    if (deathTimer <= 0) {
+      restartGame();
+      if (online.enabled) syncLocalPlayerToRoom(true);
+    }
     return;
   }
 
@@ -795,6 +1228,13 @@ function update(dt) {
 
   const len = Math.sqrt(mx * mx + my * my);
   if (len > 1) { mx /= len; my /= len; }
+
+  if (online.enabled) {
+    const boostUntil = online.players[online.localUid]?.boostUntil || 0;
+    speedBoostLeft = Math.max(0, (boostUntil - Date.now()) / 1000);
+  } else if (speedBoostLeft > 0) {
+    speedBoostLeft -= dt;
+  }
 
   const speed = PLAYER_SPEED * (speedBoostLeft > 0 ? BOOST_MULT : 1);
   const vx = mx * speed;
@@ -833,115 +1273,175 @@ function update(dt) {
     setTimeout(() => { flickerAlpha = 0; }, 60 + Math.random() * 120);
   }
 
-  // Win check
-  const dist = Math.hypot(player.x - EXIT.x, player.y - EXIT.y);
-  if (dist < CELL * 0.8) gameWon = true;
-
-  // ── Almond water pickup ─────────────────────────────────────────────────────
-  if (speedBoostLeft > 0) speedBoostLeft -= dt;
-  for (const aw of almondWaters) {
-    if (aw.picked) continue;
-    if (Math.hypot(player.x - aw.x, player.y - aw.y) < CELL * 0.55) {
-      aw.picked = true;
-      speedBoostLeft = BOOST_SECONDS;
-    }
-  }
-
-  // ── Monster AI (BFS pathfinding) ────────────────────────────────────────────
   const pCX = (player.x  / CELL) | 0;
   const pCY = (player.y  / CELL) | 0;
   const playerInSafeRoom = isSafeCell(pCX, pCY);
 
-  if (playerInSafeRoom && !playerWasInSafeRoom) {
-    relocateMonsterAwayFromPlayer(pCX, pCY);
+  const distToExit = Math.hypot(player.x - EXIT.x, player.y - EXIT.y);
+  if (!online.enabled) {
+    if (distToExit < CELL * 0.8) gameWon = true;
+
+    for (const aw of almondWaters) {
+      if (aw.picked) continue;
+      if (Math.hypot(player.x - aw.x, player.y - aw.y) < CELL * 0.55) {
+        aw.picked = true;
+        speedBoostLeft = BOOST_SECONDS;
+      }
+    }
+  } else {
+    if (distToExit < CELL * 0.8 && !online.winState?.won) {
+      online.winState = { won: true, winnerUid: online.localUid, winnerName: online.localName, at: Date.now() };
+      updateData(ref(firebaseDb, `rooms/${online.roomId}/shared`), { win: online.winState }).catch(() => {});
+      gameWon = true;
+    }
   }
 
-  let mCX = (monster.x / CELL) | 0;
-  let mCY = (monster.y / CELL) | 0;
-  let monDist = Math.hypot(player.x - monster.x, player.y - monster.y);
+  const shouldDriveMonster = !online.enabled || online.hostUid === online.localUid;
+  if (shouldDriveMonster) {
+    const alivePlayers = listAlivePlayersForMonster();
 
-  if (playerInSafeRoom) {
-    monster.isChasing = false;
-  } else if (monster.isChasing) {
-    if (monDist > MONSTER_LOSE_RANGE) {
+    if (!online.enabled) {
+      if (playerInSafeRoom && !playerWasInSafeRoom) {
+        relocateMonsterAwayFromPlayer(pCX, pCY);
+      }
+    } else {
+      const nextSafeFlags = {};
+      for (const candidate of alivePlayers) {
+        const cx = (candidate.x / CELL) | 0;
+        const cy = (candidate.y / CELL) | 0;
+        const inSafe = candidate.inSafeRoom || isSafeCell(cx, cy);
+        nextSafeFlags[candidate.uid] = inSafe;
+        if (inSafe && !online.safeFlags[candidate.uid]) {
+          relocateMonsterAwayFromPlayer(cx, cy);
+        }
+      }
+      online.safeFlags = nextSafeFlags;
+
+      const playerUpdates = {};
+      let pickedChanged = false;
+      almondWaters.forEach((aw, index) => {
+        if (aw.picked) return;
+        const picker = alivePlayers.find(candidate => candidate.alive && Math.hypot(candidate.x - aw.x, candidate.y - aw.y) < CELL * 0.55);
+        if (!picker) return;
+        aw.picked = true;
+        online.sharedPickedWaters[index] = true;
+        playerUpdates[`${picker.uid}/boostUntil`] = Date.now() + BOOST_SECONDS * 1000;
+        pickedChanged = true;
+      });
+
+      if (pickedChanged) {
+        updateData(ref(firebaseDb, `rooms/${online.roomId}/shared`), { pickedWaters: online.sharedPickedWaters }).catch(() => {});
+      }
+      if (Object.keys(playerUpdates).length) {
+        updateData(ref(firebaseDb, `rooms/${online.roomId}/players`), playerUpdates).catch(() => {});
+      }
+    }
+
+    const targetPlayer = getNearestMonsterTarget(listAlivePlayersForMonster());
+    let mCX = (monster.x / CELL) | 0;
+    let mCY = (monster.y / CELL) | 0;
+    let targetDist = targetPlayer ? Math.hypot(targetPlayer.x - monster.x, targetPlayer.y - monster.y) : Infinity;
+
+    if (!targetPlayer) {
       monster.isChasing = false;
-      const patrolGoal = chooseMonsterPatrolGoal(mCX, mCY);
-      setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
-    }
-  } else if (monDist <= MONSTER_DETECT_RANGE) {
-    monster.isChasing = true;
-    setMonsterGoal(pCX, pCY);
-  }
-
-  if (monster.isChasing) {
-    if (monster.goalCX !== pCX || monster.goalCY !== pCY) {
-      setMonsterGoal(pCX, pCY);
-    }
-    monster.pathRefreshTimer -= dt;
-    if (monster.pathRefreshTimer <= 0) {
-      if (!refreshMonsterStep(mCX, mCY, pCX, pCY)) {
+    } else if (monster.isChasing) {
+      if (targetDist > MONSTER_LOSE_RANGE) {
         monster.isChasing = false;
         const patrolGoal = chooseMonsterPatrolGoal(mCX, mCY);
         setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
       }
-      monster.pathRefreshTimer = 0.2;
-    }
-  } else {
-    const reachedGoal = mCX === monster.goalCX && mCY === monster.goalCY;
-    if (!monsterCanUseCell(monster.goalCX, monster.goalCY) || reachedGoal) {
-      const patrolGoal = chooseMonsterPatrolGoal(mCX, mCY);
-      setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
+    } else if (targetDist <= MONSTER_DETECT_RANGE) {
+      monster.isChasing = true;
+      setMonsterGoal((targetPlayer.x / CELL) | 0, (targetPlayer.y / CELL) | 0);
     }
 
-    monster.pathRefreshTimer -= dt;
-    if (monster.pathRefreshTimer <= 0) {
-      if (!refreshMonsterStep(mCX, mCY, monster.goalCX, monster.goalCY)) {
+    if (monster.isChasing && targetPlayer) {
+      const targetCX = (targetPlayer.x / CELL) | 0;
+      const targetCY = (targetPlayer.y / CELL) | 0;
+      if (monster.goalCX !== targetCX || monster.goalCY !== targetCY) {
+        setMonsterGoal(targetCX, targetCY);
+      }
+      monster.pathRefreshTimer -= dt;
+      if (monster.pathRefreshTimer <= 0) {
+        if (!refreshMonsterStep(mCX, mCY, targetCX, targetCY)) {
+          monster.isChasing = false;
+          const patrolGoal = chooseMonsterPatrolGoal(mCX, mCY);
+          setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
+        }
+        monster.pathRefreshTimer = 0.2;
+      }
+    } else {
+      const reachedGoal = mCX === monster.goalCX && mCY === monster.goalCY;
+      if (!monsterCanUseCell(monster.goalCX, monster.goalCY) || reachedGoal) {
         const patrolGoal = chooseMonsterPatrolGoal(mCX, mCY);
         setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
-        refreshMonsterStep(mCX, mCY, monster.goalCX, monster.goalCY);
       }
-      monster.pathRefreshTimer = 0.32;
+
+      monster.pathRefreshTimer -= dt;
+      if (monster.pathRefreshTimer <= 0) {
+        if (!refreshMonsterStep(mCX, mCY, monster.goalCX, monster.goalCY)) {
+          const patrolGoal = chooseMonsterPatrolGoal(mCX, mCY);
+          setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
+          refreshMonsterStep(mCX, mCY, monster.goalCX, monster.goalCY);
+        }
+        monster.pathRefreshTimer = 0.32;
+      }
+    }
+
+    if (monster.pathTargetCX >= 0) {
+      const tx = monster.pathTargetCX * CELL + CELL / 2;
+      const ty = monster.pathTargetCY * CELL + CELL / 2;
+      const ddx = tx - monster.x;
+      const ddy = ty - monster.y;
+      const dd = Math.hypot(ddx, ddy);
+      if (dd > 2) {
+        monster.dx = ddx / dd;
+        monster.dy = ddy / dd;
+      } else {
+        resetMonsterPath();
+      }
+    }
+
+    const mspd = monster.isChasing ? MONSTER_SPD_CHASE : MONSTER_SPD_PATROL;
+    monster.x += monster.dx * mspd;
+    monster.y += monster.dy * mspd;
+
+    if (online.enabled) {
+      if (online.monsterSyncTimer <= 0) {
+        online.monsterSyncTimer = 0.08;
+        online.monsterSnapshot = {
+          x: Math.round(monster.x),
+          y: Math.round(monster.y),
+          dx: monster.dx,
+          dy: monster.dy,
+          fearLevel: monster.fearLevel,
+          isChasing: monster.isChasing,
+        };
+        updateData(ref(firebaseDb, `rooms/${online.roomId}/shared`), {
+          monster: online.monsterSnapshot,
+        }).catch(() => {});
+      }
     }
   }
 
-  if (monster.pathTargetCX >= 0) {
-    const tx = monster.pathTargetCX * CELL + CELL / 2;
-    const ty = monster.pathTargetCY * CELL + CELL / 2;
-    const ddx = tx - monster.x;
-    const ddy = ty - monster.y;
-    const dd = Math.hypot(ddx, ddy);
-    if (dd > 2) {
-      monster.dx = ddx / dd;
-      monster.dy = ddy / dd;
-    } else {
-      resetMonsterPath();
-    }
-  }
-
-  const mspd = monster.isChasing ? MONSTER_SPD_CHASE : MONSTER_SPD_PATROL;
-  monster.x += monster.dx * mspd;
-  monster.y += monster.dy * mspd;
-
-  monDist = Math.hypot(player.x - monster.x, player.y - monster.y);
-
-  // Smooth fear level
+  const monDist = Math.hypot(player.x - monster.x, player.y - monster.y);
   const targetFear = playerInSafeRoom || monDist >= FEAR_RANGE
     ? 0
     : Math.pow(1 - monDist / FEAR_RANGE, 1.4);
   monster.fearLevel += (targetFear - monster.fearLevel) * 0.04;
 
-  // Shake
   const shakeMag = monster.fearLevel * 5;
   shakeX = (Math.random() - 0.5) * shakeMag;
   shakeY = (Math.random() - 0.5) * shakeMag;
 
-  // ── Catch player ─────────────────────────────────────────────────────────────
   if (!playerInSafeRoom && monDist < CATCH_DIST) {
     playerDead = true;
     deathTimer = DEATH_DURATION;
+    if (online.enabled) syncLocalPlayerToRoom(true);
   }
 
   playerWasInSafeRoom = playerInSafeRoom;
+  if (online.enabled) syncLocalPlayerToRoom();
 }
 
 function drawMaze() {
@@ -1066,39 +1566,87 @@ function drawExit() {
 }
 
 function drawPlayer() {
-  const px = Math.round(player.x - cam.x);
-  const py = Math.round(player.y - cam.y);
+  drawCharacterSprite({
+    x: player.x,
+    y: player.y,
+    facing: player.facing,
+    frame: player.frame,
+    name: online.localName || 'YOU',
+    accent: online.localColor || '#f0d96a',
+    local: true,
+  });
+}
+
+function drawCharacterSprite({ x, y, facing, frame, name, accent, local = false }) {
+  const px = Math.round(x - cam.x);
+  const py = Math.round(y - cam.y);
+  if (px < -48 || px > canvas.width + 48 || py < -64 || py > canvas.height + 48) return;
 
   ctx.save();
   ctx.imageSmoothingEnabled = false;
-
   const scale = 2;
   const sw = SPRITE_W * scale;
   const sh = SPRITE_H * scale;
 
-  if (player.facing === -1) {
+  if (!local) {
+    ctx.shadowBlur = 16;
+    ctx.shadowColor = accent;
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(px, py - sh / 2, 15, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  if (facing === -1) {
     ctx.translate(px, py);
     ctx.scale(-1, 1);
     ctx.drawImage(
       spriteCanvas,
-      player.frame * SPRITE_W, 0, SPRITE_W, SPRITE_H,
+      frame * SPRITE_W, 0, SPRITE_W, SPRITE_H,
       -sw / 2, -sh, sw, sh
     );
   } else {
     ctx.drawImage(
       spriteCanvas,
-      player.frame * SPRITE_W, 0, SPRITE_W, SPRITE_H,
+      frame * SPRITE_W, 0, SPRITE_W, SPRITE_H,
       px - sw / 2, py - sh, sw, sh
     );
   }
 
-  // shadow
   ctx.fillStyle = 'rgba(0,0,0,0.35)';
   ctx.beginPath();
   ctx.ellipse(px, py, 10, 4, 0, 0, Math.PI * 2);
   ctx.fill();
 
+  if (!local) {
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+    ctx.lineWidth = 4;
+    ctx.strokeText(name, px, py - sh - 10);
+    ctx.fillText(name, px, py - sh - 10);
+  }
+
   ctx.restore();
+}
+
+function drawRemotePlayers() {
+  if (!online.enabled) return;
+  for (const [uid, playerData] of Object.entries(online.players)) {
+    if (uid === online.localUid || playerData.alive === false) continue;
+    drawCharacterSprite({
+      x: playerData.x ?? PLAYER_START_CX * CELL + CELL / 2,
+      y: playerData.y ?? PLAYER_START_CY * CELL + CELL / 2,
+      facing: playerData.facing ?? 1,
+      frame: playerData.frame ?? 0,
+      name: playerData.name || shortNameForPlayer(uid),
+      accent: playerData.color || colorForPlayer(uid),
+      local: false,
+    });
+  }
 }
 
 function drawAlmondWaters() {
@@ -1273,7 +1821,8 @@ function drawHUD() {
 
   const pcx = Math.floor(player.x / CELL);
   const pcy = Math.floor(player.y / CELL);
-  document.getElementById('hudPos').textContent = `[${pcx},${pcy}]`;
+  const roomInfo = online.enabled ? ` ROOM ${online.roomId} ${Object.keys(online.players).length}/${MAX_PLAYERS}` : '';
+  document.getElementById('hudPos').textContent = `[${pcx},${pcy}]${roomInfo}`;
 }
 
 function drawWinScreen() {
@@ -1343,6 +1892,18 @@ function drawMinimap() {
   ctx.arc(mx + pdx, my + pdy, 2.5, 0, Math.PI * 2);
   ctx.fill();
 
+  if (online.enabled) {
+    for (const [uid, playerData] of Object.entries(online.players)) {
+      if (uid === online.localUid || playerData.alive === false) continue;
+      ctx.fillStyle = playerData.color || colorForPlayer(uid);
+      const rdx = ((playerData.x ?? 0) / CELL) * scx;
+      const rdy = ((playerData.y ?? 0) / CELL) * scy;
+      ctx.beginPath();
+      ctx.arc(mx + rdx, my + rdy, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   ctx.strokeStyle = '#c8b96a';
   ctx.lineWidth = 1;
   ctx.strokeRect(mx, my, mw, mh);
@@ -1389,6 +1950,7 @@ function render() {
   drawAlmondWaters();
   drawExit();
   drawMonster();
+  drawRemotePlayers();
   drawPlayer();
   ctx.restore();
 
@@ -1412,4 +1974,77 @@ function loop(timestamp) {
   requestAnimationFrame(loop);
 }
 
+function startSoloMode() {
+  online.enabled = false;
+  online.roomId = '';
+  online.roomSeed = 0;
+  online.hostUid = '';
+  online.players = {};
+  online.monsterSnapshot = null;
+  online.sharedPickedWaters = {};
+  online.winState = null;
+  online.safeFlags = {};
+  cleanupRoomListeners();
+  initializeWorld(hashString(`solo:${Date.now()}`));
+  restartGame({ resetSharedState: true });
+  setOverlayVisible(false);
+  window.history.replaceState({}, '', getRoomUrl(''));
+}
+
+async function bootstrapMultiplayerUi() {
+  roomCodeInput.addEventListener('input', () => {
+    roomCodeInput.value = sanitizeRoomCode(roomCodeInput.value);
+    updateRoomShareUi();
+  });
+
+  createRoomBtn.addEventListener('click', async () => {
+    if (!firebaseReady) {
+      setLobbyStatus(firebaseDisabledReason || 'Firebase is not configured yet. Use solo mode for now.');
+      return;
+    }
+    const roomId = generateRoomCode();
+    await joinRoom(roomId, { create: true });
+  });
+
+  joinRoomBtn.addEventListener('click', async () => {
+    await joinRoom(roomCodeInput.value, { create: false });
+  });
+
+  soloBtn.addEventListener('click', () => {
+    setLobbyStatus('Solo mode started.');
+    startSoloMode();
+  });
+
+  copyRoomLinkBtn.addEventListener('click', async () => {
+    if (!online.joinLink) return;
+    try {
+      await navigator.clipboard.writeText(online.joinLink);
+      setLobbyStatus('Room link copied.');
+    } catch {
+      setLobbyStatus(online.joinLink);
+    }
+  });
+
+  try {
+    await initFirebase();
+  } catch (error) {
+    firebaseDisabledReason = 'Failed to initialize Firebase.';
+    setLobbyStatus('Co-op backend failed to initialize. Solo mode is still available.');
+  }
+
+  const autoRoom = sanitizeRoomCode(new URL(window.location.href).searchParams.get('room'));
+  if (autoRoom) {
+    roomCodeInput.value = autoRoom;
+    updateRoomShareUi();
+    if (firebaseReady) {
+      const joined = await joinRoom(autoRoom, { create: false });
+      if (!joined) setOverlayVisible(true);
+      return;
+    }
+  }
+
+  setOverlayVisible(true);
+}
+
+bootstrapMultiplayerUi();
 requestAnimationFrame(ts => { lastTime = ts; loop(ts); });
