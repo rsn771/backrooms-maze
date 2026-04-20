@@ -381,6 +381,16 @@ function generateMaze() {
   }
 }
 
+function generateOpenForestWorld() {
+  maze.fill(0);
+  for (let cy = 0; cy < ROWS; cy++) {
+    for (let cx = 0; cx < COLS; cx++) {
+      if (cx + 1 < COLS) openPassage(cx, cy, 1);
+      if (cy + 1 < ROWS) openPassage(cx, cy, 2);
+    }
+  }
+}
+
 // ── Precompute tile textures ─────────────────────────────────────────────────
 // Floor tile — carpet pattern
 const floorCanvas = document.createElement('canvas');
@@ -464,16 +474,22 @@ const forestFloorCanvas = document.createElement('canvas');
 forestFloorCanvas.width = forestFloorCanvas.height = CELL;
 (function buildForestFloor() {
   const fc = forestFloorCanvas.getContext('2d');
-  fc.fillStyle = '#294b2c';
+  fc.fillStyle = '#142118';
   fc.fillRect(0, 0, CELL, CELL);
-  for (let i = 0; i < 170; i++) {
-    fc.fillStyle = `rgba(${40 + Math.floor(Math.random() * 45)}, ${90 + Math.floor(Math.random() * 70)}, ${35 + Math.floor(Math.random() * 30)}, ${0.12 + Math.random() * 0.18})`;
-    fc.fillRect(Math.random() * CELL, Math.random() * CELL, 2 + Math.random() * 4, 2 + Math.random() * 4);
+  for (let i = 0; i < 210; i++) {
+    fc.fillStyle = `rgba(${18 + Math.floor(Math.random() * 18)}, ${42 + Math.floor(Math.random() * 42)}, ${18 + Math.floor(Math.random() * 20)}, ${0.1 + Math.random() * 0.16})`;
+    fc.fillRect(Math.random() * CELL, Math.random() * CELL, 2 + Math.random() * 5, 2 + Math.random() * 5);
   }
-  for (let i = 0; i < 28; i++) {
-    fc.fillStyle = `rgba(90,70,38,${0.08 + Math.random() * 0.12})`;
+  for (let i = 0; i < 46; i++) {
+    fc.fillStyle = `rgba(58,44,28,${0.08 + Math.random() * 0.12})`;
     fc.beginPath();
-    fc.arc(Math.random() * CELL, Math.random() * CELL, 5 + Math.random() * 12, 0, Math.PI * 2);
+    fc.arc(Math.random() * CELL, Math.random() * CELL, 4 + Math.random() * 11, 0, Math.PI * 2);
+    fc.fill();
+  }
+  for (let i = 0; i < 18; i++) {
+    fc.fillStyle = `rgba(92, 102, 112, ${0.04 + Math.random() * 0.07})`;
+    fc.beginPath();
+    fc.ellipse(Math.random() * CELL, Math.random() * CELL, 10 + Math.random() * 16, 4 + Math.random() * 8, Math.random() * Math.PI, 0, Math.PI * 2);
     fc.fill();
   }
 })();
@@ -482,10 +498,10 @@ const forestWallCanvas = document.createElement('canvas');
 forestWallCanvas.width = forestWallCanvas.height = CELL;
 (function buildForestWall() {
   const fc = forestWallCanvas.getContext('2d');
-  fc.fillStyle = '#18351d';
+  fc.fillStyle = '#0f1b12';
   fc.fillRect(0, 0, CELL, CELL);
-  for (let i = 0; i < 140; i++) {
-    fc.fillStyle = `rgba(${20 + Math.floor(Math.random() * 20)}, ${70 + Math.floor(Math.random() * 70)}, ${25 + Math.floor(Math.random() * 25)}, ${0.16 + Math.random() * 0.2})`;
+  for (let i = 0; i < 180; i++) {
+    fc.fillStyle = `rgba(${12 + Math.floor(Math.random() * 12)}, ${28 + Math.floor(Math.random() * 36)}, ${14 + Math.floor(Math.random() * 18)}, ${0.15 + Math.random() * 0.22})`;
     fc.fillRect(Math.random() * CELL, Math.random() * CELL, 2 + Math.random() * 6, 2 + Math.random() * 10);
   }
 })();
@@ -496,12 +512,12 @@ forestFaceCanvas.height = WALL_FACE;
 (function buildForestFace() {
   const fc = forestFaceCanvas.getContext('2d');
   const grad = fc.createLinearGradient(0, 0, 0, WALL_FACE);
-  grad.addColorStop(0, '#315b2f');
-  grad.addColorStop(1, '#10230f');
+  grad.addColorStop(0, '#1d3420');
+  grad.addColorStop(1, '#081109');
   fc.fillStyle = grad;
   fc.fillRect(0, 0, CELL, WALL_FACE);
   for (let px = 0; px < CELL; px += 8) {
-    fc.fillStyle = 'rgba(0,0,0,0.14)';
+    fc.fillStyle = 'rgba(0,0,0,0.2)';
     fc.fillRect(px, 0, 2, WALL_FACE);
   }
 })();
@@ -656,10 +672,29 @@ function rectTooClose(ax, ay, aw, ah, bx, by, bw, bh, gap) {
   );
 }
 
-function carveSafeRoom(x, y, w, h) {
+function markSafeZoneArea(x, y, w, h, extra = {}) {
   for (let cy = y; cy < y + h; cy++) {
     for (let cx = x; cx < x + w; cx++) {
       safeCells[cellIndex(cx, cy)] = 1;
+    }
+  }
+
+  safeRooms.push({
+    x,
+    y,
+    w,
+    h,
+    centerCX: x + ((w - 1) >> 1),
+    centerCY: y + ((h - 1) >> 1),
+    type: 'room',
+    label: 'SAFE',
+    ...extra,
+  });
+}
+
+function carveSafeRoom(x, y, w, h) {
+  for (let cy = y; cy < y + h; cy++) {
+    for (let cx = x; cx < x + w; cx++) {
       if (cx + 1 < x + w) openBetweenCells(cx, cy, cx + 1, cy);
       if (cy + 1 < y + h) openBetweenCells(cx, cy, cx, cy + 1);
     }
@@ -695,14 +730,7 @@ function carveSafeRoom(x, y, w, h) {
     if (opened >= 2) break;
   }
 
-  safeRooms.push({
-    x,
-    y,
-    w,
-    h,
-    centerCX: x + ((w - 1) >> 1),
-    centerCY: y + ((h - 1) >> 1),
-  });
+  markSafeZoneArea(x, y, w, h);
 }
 
 function generateSafeRooms() {
@@ -803,10 +831,10 @@ function generateVillageHouses() {
   if (currentLocationId !== LOCATION_FOREST_VILLAGE) return;
 
   let attempts = 0;
-  while (villageHouses.length < 8 && attempts < 700) {
+  while (villageHouses.length < 14 && attempts < 1400) {
     attempts++;
-    const w = worldRandom() < 0.5 ? 3 : 4;
-    const h = worldRandom() < 0.5 ? 3 : 4;
+    const w = 3 + Math.floor(worldRandom() * 3);
+    const h = 3 + Math.floor(worldRandom() * 3);
     const x = 2 + Math.floor(worldRandom() * (COLS - w - 4));
     const y = 2 + Math.floor(worldRandom() * (ROWS - h - 4));
     const centerCX = x + ((w - 1) >> 1);
@@ -826,7 +854,7 @@ function generateVillageHouses() {
     }
     if (blocked) continue;
     for (const house of villageHouses) {
-      if (rectTooClose(x, y, w, h, house.x, house.y, house.w, house.h, 3)) {
+      if (rectTooClose(x, y, w, h, house.x, house.y, house.w, house.h, 4)) {
         blocked = true;
         break;
       }
@@ -837,14 +865,14 @@ function generateVillageHouses() {
   }
 }
 
-function isVillagePropPlacementAllowed(cx, cy, minDistance = 0) {
+function isVillagePropPlacementAllowed(cx, cy, minDistance = 0, minPropGap = 1.2) {
   if (currentLocationId !== LOCATION_FOREST_VILLAGE) return false;
   if (!inBounds(cx, cy) || !maze[cellIndex(cx, cy)]) return false;
   if (isSafeCell(cx, cy) || isHouseCell(cx, cy)) return false;
   if (Math.hypot(cx - PLAYER_START_CX, cy - PLAYER_START_CY) < minDistance) return false;
   if (Math.hypot(cx - EXIT_CX, cy - EXIT_CY) < minDistance) return false;
   if (Math.hypot(cx - MONSTER_START_CX, cy - MONSTER_START_CY) < minDistance) return false;
-  return !villageProps.some(prop => Math.hypot(prop.cx - cx, prop.cy - cy) < 1.2);
+  return !villageProps.some(prop => Math.hypot(prop.cx - cx, prop.cy - cy) < minPropGap);
 }
 
 function pushVillageProp(prop) {
@@ -859,29 +887,75 @@ function generateVillageProps() {
   villageProps = [];
   if (currentLocationId !== LOCATION_FOREST_VILLAGE) return;
 
+  let treeCount = 0;
   let treeAttempts = 0;
-  while (villageProps.filter(prop => prop.type === 'tree').length < 90 && treeAttempts < 1200) {
+  while (treeCount < 170 && treeAttempts < 3200) {
     treeAttempts++;
     const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
     const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
-    if (!isVillagePropPlacementAllowed(cx, cy, 4)) continue;
+    if (!isVillagePropPlacementAllowed(cx, cy, 4, 1.05)) continue;
+    const dead = worldRandom() < 0.14;
     pushVillageProp({
-      type: 'tree',
+      type: dead ? 'deadTree' : 'tree',
       cx,
       cy,
       blocking: true,
       shape: 'circle',
-      radius: 13 + worldRandom() * 3,
+      radius: dead ? 10 + worldRandom() * 3 : 12 + worldRandom() * 5,
       sway: worldRandom() * Math.PI * 2,
+      size: 0.9 + worldRandom() * 0.35,
     });
+    treeCount++;
   }
 
+  let rockCount = 0;
+  let rockAttempts = 0;
+  while (rockCount < 80 && rockAttempts < 1800) {
+    rockAttempts++;
+    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
+    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
+    if (!isVillagePropPlacementAllowed(cx, cy, 3, 1.15)) continue;
+    pushVillageProp({
+      type: 'rock',
+      cx,
+      cy,
+      blocking: true,
+      shape: 'circle',
+      radius: 8 + worldRandom() * 6,
+      width: 16 + worldRandom() * 12,
+      height: 12 + worldRandom() * 10,
+      tilt: worldRandom() * Math.PI,
+    });
+    rockCount++;
+  }
+
+  let stumpCount = 0;
+  let stumpAttempts = 0;
+  while (stumpCount < 34 && stumpAttempts < 900) {
+    stumpAttempts++;
+    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
+    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
+    if (!isVillagePropPlacementAllowed(cx, cy, 3, 1.2)) continue;
+    pushVillageProp({
+      type: 'stump',
+      cx,
+      cy,
+      blocking: true,
+      shape: 'circle',
+      radius: 8 + worldRandom() * 2,
+      width: 14 + worldRandom() * 8,
+      height: 10 + worldRandom() * 5,
+    });
+    stumpCount++;
+  }
+
+  let campCount = 0;
   let campAttempts = 0;
-  while (villageProps.filter(prop => prop.type === 'campfire').length < 7 && campAttempts < 500) {
+  while (campCount < 14 && campAttempts < 1200) {
     campAttempts++;
     const cx = 3 + Math.floor(worldRandom() * (COLS - 6));
     const cy = 3 + Math.floor(worldRandom() * (ROWS - 6));
-    if (!isVillagePropPlacementAllowed(cx, cy, 6)) continue;
+    if (!isVillagePropPlacementAllowed(cx, cy, 6, 2.2)) continue;
 
     pushVillageProp({
       type: 'campfire',
@@ -892,28 +966,41 @@ function generateVillageProps() {
       radius: 9,
       flicker: worldRandom() * Math.PI * 2,
     });
+    campCount++;
 
     const tentSpots = [
       { cx: cx + 1, cy },
       { cx: cx - 1, cy },
       { cx, cy: cy + 1 },
       { cx, cy: cy - 1 },
+      { cx: cx + 1, cy: cy + 1 },
+      { cx: cx - 1, cy: cy - 1 },
+      { cx: cx + 1, cy: cy - 1 },
+      { cx: cx - 1, cy: cy + 1 },
     ].sort(() => worldRandom() - 0.5);
 
+    const tentTarget = worldRandom() < 0.45 ? 3 : 2;
     let tentsPlaced = 0;
     for (const spot of tentSpots) {
-      if (!isVillagePropPlacementAllowed(spot.cx, spot.cy, 0)) continue;
+      if (!isVillagePropPlacementAllowed(spot.cx, spot.cy, 1, 1.55)) continue;
       pushVillageProp({
         type: 'tent',
         cx: spot.cx,
         cy: spot.cy,
-        blocking: true,
+        blocking: false,
         shape: 'rect',
-        width: 30,
-        height: 20,
+        width: 30 + worldRandom() * 6,
+        height: 20 + worldRandom() * 4,
+        entranceSide: worldRandom() < 0.5 ? -1 : 1,
+        safeZone: true,
+      });
+      markSafeZoneArea(spot.cx, spot.cy, 1, 1, {
+        type: 'tent',
+        label: 'CAMP',
+        pulseOffset: worldRandom() * Math.PI * 2,
       });
       tentsPlaced++;
-      if (tentsPlaced >= 2) break;
+      if (tentsPlaced >= tentTarget) break;
     }
   }
 }
@@ -1039,15 +1126,19 @@ function initializeWorld(seed, locationId = null) {
   weapons = [];
   bullets = [];
 
-  generateMaze();
+  if (currentLocationId === LOCATION_FOREST_VILLAGE) generateOpenForestWorld();
+  else generateMaze();
 
   maze[cellIndex(EXIT_CX, EXIT_CY)] |= 0b1111;
   maze[cellIndex(EXIT_CX, EXIT_CY - 1)] |= 0b1111;
   maze[cellIndex(EXIT_CX - 1, EXIT_CY)] |= 0b1111;
 
-  generateSafeRooms();
-  generateVillageHouses();
-  generateVillageProps();
+  if (currentLocationId === LOCATION_FOREST_VILLAGE) {
+    generateVillageHouses();
+    generateVillageProps();
+  } else {
+    generateSafeRooms();
+  }
   spawnAlmondWaters();
   spawnWeapons();
 }
@@ -1976,7 +2067,57 @@ function getWallFaceTileForSegment(cx, cy, bit) {
   return (isHouseCell(cx, cy) || isHouseCell(nx, ny)) ? houseFaceCanvas : forestFaceCanvas;
 }
 
+function drawForestWorld() {
+  const startCX = Math.max(0, Math.floor(cam.x / CELL) - 1);
+  const startCY = Math.max(0, Math.floor(cam.y / CELL) - 1);
+  const endCX   = Math.min(COLS, startCX + Math.ceil(canvas.width  / CELL) + 2);
+  const endCY   = Math.min(ROWS, startCY + Math.ceil(canvas.height / CELL) + 2);
+
+  for (let cy = startCY; cy < endCY; cy++) {
+    for (let cx = startCX; cx < endCX; cx++) {
+      const wx = cx * CELL - cam.x;
+      const wy = cy * CELL - cam.y;
+      ctx.drawImage(getFloorTileForCell(cx, cy), 0, 0, CELL, CELL, wx, wy, CELL, CELL);
+    }
+  }
+
+  for (let cy = startCY; cy < endCY; cy++) {
+    for (let cx = startCX; cx < endCX; cx++) {
+      const wx = cx * CELL - cam.x;
+      const wy = cy * CELL - cam.y;
+      const bits = maze[cellIndex(cx, cy)];
+      const topTile = getWallTopTileForCell(cx, cy);
+      const wTop = (x, y, w, h) => ctx.drawImage(topTile, 0, 0, CELL, CELL, x, y, w, h);
+      const northFace = (x, y, w) => ctx.drawImage(getWallFaceTileForSegment(cx, cy, 0), 0, 0, CELL, WALL_FACE, x, y, w, WALL_FACE);
+
+      if (!(bits & 1)) {
+        wTop(wx + WALL_T, wy, CELL - WALL_T * 2, WALL_T);
+        northFace(wx + WALL_T, wy + WALL_T, CELL - WALL_T * 2);
+      }
+      if (!(bits & 4)) wTop(wx + WALL_T, wy + CELL - WALL_T, CELL - WALL_T * 2, WALL_T);
+      if (!(bits & 8)) wTop(wx, wy + WALL_T, WALL_T, CELL - WALL_T * 2);
+      if (!(bits & 2)) wTop(wx + CELL - WALL_T, wy + WALL_T, WALL_T, CELL - WALL_T * 2);
+
+      if (!(bits & 1) || !(bits & 8)) {
+        wTop(wx, wy, WALL_T, WALL_T);
+        if (!(bits & 1)) northFace(wx, wy + WALL_T, WALL_T);
+      }
+      if (!(bits & 1) || !(bits & 2)) {
+        wTop(wx + CELL - WALL_T, wy, WALL_T, WALL_T);
+        if (!(bits & 1)) northFace(wx + CELL - WALL_T, wy + WALL_T, WALL_T);
+      }
+      if (!(bits & 4) || !(bits & 8)) wTop(wx, wy + CELL - WALL_T, WALL_T, WALL_T);
+      if (!(bits & 4) || !(bits & 2)) wTop(wx + CELL - WALL_T, wy + CELL - WALL_T, WALL_T, WALL_T);
+    }
+  }
+}
+
 function drawMaze() {
+  if (currentLocationId === LOCATION_FOREST_VILLAGE) {
+    drawForestWorld();
+    return;
+  }
+
   const startCX = Math.max(0, Math.floor(cam.x / CELL) - 1);
   const startCY = Math.max(0, Math.floor(cam.y / CELL) - 1);
   const endCX   = Math.min(COLS, startCX + Math.ceil(canvas.width  / CELL) + 2);
@@ -2056,6 +2197,28 @@ function drawMaze() {
 }
 
 function drawSafeRooms() {
+  if (currentLocationId === LOCATION_FOREST_VILLAGE) {
+    for (const room of safeRooms) {
+      const cx = room.centerCX * CELL + CELL / 2 - cam.x;
+      const cy = room.centerCY * CELL + CELL / 2 - cam.y + 12;
+      if (cx < -90 || cx > canvas.width + 90 || cy < -90 || cy > canvas.height + 90) continue;
+
+      const pulse = 0.45 + 0.2 * Math.sin(Date.now() / 700 + (room.pulseOffset || room.centerCX));
+      ctx.save();
+      ctx.fillStyle = `rgba(110, 210, 175, ${0.12 + pulse * 0.16})`;
+      ctx.strokeStyle = `rgba(180, 255, 225, ${0.35 + pulse * 0.35})`;
+      ctx.lineWidth = 2;
+      ctx.shadowBlur = 22;
+      ctx.shadowColor = 'rgba(110, 240, 200, 0.35)';
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, 22, 10, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+    return;
+  }
+
   for (const room of safeRooms) {
     const rx = room.x * CELL - cam.x + WALL_T;
     const ry = room.y * CELL - cam.y + WALL_T;
@@ -2094,36 +2257,84 @@ function drawVillageProps() {
     ctx.save();
 
     if (prop.type === 'tree') {
-      const sway = Math.sin(Date.now() / 900 + prop.sway) * 1.5;
-      ctx.fillStyle = '#4b2b14';
-      ctx.fillRect(sx - 4, sy + 6, 8, 18);
-      ctx.shadowBlur = 18;
-      ctx.shadowColor = 'rgba(22, 80, 34, 0.55)';
-      ctx.fillStyle = '#214f28';
+      const sway = Math.sin(Date.now() / 900 + prop.sway) * 1.4;
+      const size = prop.size || 1;
+      ctx.fillStyle = '#2b180d';
+      ctx.fillRect(sx - 3 * size, sy + 2, 6 * size, 20 * size);
+      ctx.shadowBlur = 20;
+      ctx.shadowColor = 'rgba(14, 60, 30, 0.55)';
+      ctx.fillStyle = '#16311c';
       ctx.beginPath();
-      ctx.arc(sx + sway, sy - 12, 16, 0, Math.PI * 2);
-      ctx.arc(sx - 12 + sway * 0.6, sy - 1, 12, 0, Math.PI * 2);
-      ctx.arc(sx + 12 + sway * 0.6, sy, 12, 0, Math.PI * 2);
+      ctx.moveTo(sx + sway, sy - 24 * size);
+      ctx.lineTo(sx - 18 * size + sway * 0.5, sy - 1 * size);
+      ctx.lineTo(sx + 18 * size + sway * 0.5, sy - 1 * size);
+      ctx.closePath();
       ctx.fill();
+      ctx.fillStyle = '#1e4123';
+      ctx.beginPath();
+      ctx.moveTo(sx + sway * 0.6, sy - 11 * size);
+      ctx.lineTo(sx - 21 * size + sway * 0.35, sy + 14 * size);
+      ctx.lineTo(sx + 21 * size + sway * 0.35, sy + 14 * size);
+      ctx.closePath();
+      ctx.fill();
+    } else if (prop.type === 'deadTree') {
+      const sway = Math.sin(Date.now() / 1100 + prop.sway) * 1.2;
+      ctx.strokeStyle = '#24160e';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy + 18);
+      ctx.lineTo(sx + sway, sy - 16);
+      ctx.lineTo(sx + sway * 1.2 - 8, sy - 26);
+      ctx.moveTo(sx + sway, sy - 4);
+      ctx.lineTo(sx - 10, sy - 14);
+      ctx.moveTo(sx + sway, sy - 8);
+      ctx.lineTo(sx + 12, sy - 20);
+      ctx.stroke();
+    } else if (prop.type === 'rock') {
+      ctx.fillStyle = '#4b5354';
+      ctx.beginPath();
+      ctx.ellipse(sx, sy + 6, prop.width / 2, prop.height / 2, prop.tilt || 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.beginPath();
+      ctx.ellipse(sx - 3, sy + 3, prop.width / 3.4, prop.height / 3.8, prop.tilt || 0, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (prop.type === 'stump') {
+      ctx.fillStyle = '#4b2d17';
+      ctx.fillRect(sx - 8, sy - 2, 16, 14);
+      ctx.fillStyle = '#7a5732';
+      ctx.beginPath();
+      ctx.ellipse(sx, sy - 2, prop.width / 2.3, prop.height / 2.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(55, 31, 14, 0.55)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy - 2, prop.width / 4.2, prop.height / 4, 0, 0, Math.PI * 2);
+      ctx.stroke();
     } else if (prop.type === 'tent') {
-      ctx.shadowBlur = 14;
-      ctx.shadowColor = 'rgba(120, 80, 36, 0.45)';
-      ctx.fillStyle = '#8f6a37';
+      const blink = 0.55 + 0.45 * Math.sin(Date.now() / 600 + sx * 0.02);
+      ctx.shadowBlur = 16;
+      ctx.shadowColor = 'rgba(96, 146, 118, 0.32)';
+      ctx.fillStyle = '#695233';
       ctx.beginPath();
       ctx.moveTo(sx - 18, sy + 10);
       ctx.lineTo(sx, sy - 12);
       ctx.lineTo(sx + 18, sy + 10);
       ctx.closePath();
       ctx.fill();
-      ctx.fillStyle = '#5b3d1c';
+      ctx.fillStyle = '#3a2816';
       ctx.fillRect(sx - 2, sy - 10, 4, 22);
-      ctx.strokeStyle = 'rgba(255,230,170,0.28)';
+      ctx.strokeStyle = 'rgba(255,230,170,0.2)';
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(sx - 10, sy + 6);
       ctx.lineTo(sx, sy - 4);
       ctx.lineTo(sx + 10, sy + 6);
       ctx.stroke();
+      ctx.fillStyle = `rgba(160, 255, 210, ${0.08 + blink * 0.12})`;
+      ctx.beginPath();
+      ctx.arc(sx + 8 * (prop.entranceSide || 1), sy + 6, 4, 0, Math.PI * 2);
+      ctx.fill();
     } else if (prop.type === 'campfire') {
       const flicker = 0.65 + 0.35 * Math.sin(Date.now() / 120 + prop.flicker);
       ctx.shadowBlur = 24;
@@ -2173,24 +2384,53 @@ function drawVillageHouses() {
     if (x > canvas.width + CELL || y > canvas.height + CELL || x + w < -CELL || y + h < -CELL) continue;
 
     ctx.save();
-    ctx.strokeStyle = 'rgba(50, 24, 10, 0.85)';
+    ctx.strokeStyle = 'rgba(30, 18, 10, 0.92)';
     ctx.lineWidth = 4;
     ctx.strokeRect(x + 8, y + 8, w - 16, h - 16);
-    ctx.fillStyle = 'rgba(120, 72, 36, 0.12)';
+    ctx.fillStyle = 'rgba(60, 44, 28, 0.22)';
     ctx.fillRect(x + 10, y + 10, w - 20, h - 20);
 
-    // Roof accent near the top edge
-    ctx.fillStyle = 'rgba(80, 34, 16, 0.32)';
-    ctx.fillRect(x + 10, y + 10, w - 20, 10);
+    ctx.fillStyle = 'rgba(48, 24, 14, 0.44)';
+    ctx.fillRect(x + 8, y + 6, w - 16, 14);
+    ctx.fillStyle = 'rgba(24, 20, 16, 0.34)';
+    ctx.fillRect(x + 16, y + 18, w - 32, h - 36);
 
-    // Simple glowing windows on side walls
-    ctx.fillStyle = 'rgba(255, 220, 135, 0.85)';
+    ctx.fillStyle = 'rgba(255, 214, 120, 0.68)';
     const midY = y + h / 2;
     ctx.fillRect(x + 14, midY - 10, 8, 12);
     ctx.fillRect(x + w - 22, midY - 10, 8, 12);
+    ctx.fillStyle = 'rgba(18, 12, 8, 0.88)';
+    ctx.fillRect(x + w / 2 - 7, y + h - 18, 14, 10);
 
     ctx.restore();
   }
+}
+
+function drawForestAtmosphere() {
+  if (currentLocationId !== LOCATION_FOREST_VILLAGE) return;
+
+  const t = Date.now() / 1000;
+  ctx.save();
+
+  const gloom = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  gloom.addColorStop(0, 'rgba(4, 10, 8, 0.12)');
+  gloom.addColorStop(0.55, 'rgba(8, 16, 12, 0.2)');
+  gloom.addColorStop(1, 'rgba(0, 0, 0, 0.3)');
+  ctx.fillStyle = gloom;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let i = 0; i < 3; i++) {
+    const driftX = ((t * (16 + i * 9)) % (canvas.width + 420)) - 210;
+    const driftY = canvas.height * (0.24 + i * 0.22);
+    const radiusX = 180 + i * 70;
+    const radiusY = 44 + i * 18;
+    ctx.fillStyle = `rgba(150, 170, 155, ${0.035 + i * 0.01})`;
+    ctx.beginPath();
+    ctx.ellipse(driftX, driftY, radiusX, radiusY, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
 }
 
 function drawExit() {
@@ -2657,8 +2897,8 @@ function drawMinimap() {
       const bits = maze[cellIndex(cx, cy)];
       if (bits > 0) {
         if (isSafeCell(cx, cy)) ctx.fillStyle = '#3f7c78';
-        else if (currentLocationId === LOCATION_FOREST_VILLAGE && isHouseCell(cx, cy)) ctx.fillStyle = '#9a7340';
-        else ctx.fillStyle = currentLocationId === LOCATION_FOREST_VILLAGE ? '#345d33' : '#8a7a3e';
+        else if (currentLocationId === LOCATION_FOREST_VILLAGE && isHouseCell(cx, cy)) ctx.fillStyle = '#705032';
+        else ctx.fillStyle = currentLocationId === LOCATION_FOREST_VILLAGE ? '#203425' : '#8a7a3e';
         ctx.fillRect(mx + cx * scx, my + cy * scy, scx, scy);
       }
     }
@@ -2735,7 +2975,7 @@ function drawDeathScreen() {
 }
 
 function render() {
-  ctx.fillStyle = '#1a1508';
+  ctx.fillStyle = currentLocationId === LOCATION_FOREST_VILLAGE ? '#09110b' : '#1a1508';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // World layer — translated by shake so HUD/effects stay fixed
@@ -2756,6 +2996,7 @@ function render() {
   ctx.restore();
 
   // Screen-space effects (no shake)
+  drawForestAtmosphere();
   drawVignette();
   drawFearEffects();
   drawFlicker();
