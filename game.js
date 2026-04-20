@@ -17,6 +17,7 @@ const roomShareBox = document.getElementById('roomShareBox');
 const roomCodeDisplay = document.getElementById('roomCodeDisplay');
 const copyRoomLinkBtn = document.getElementById('copyRoomLinkBtn');
 const playerRoster = document.getElementById('playerRoster');
+const locationOptionButtons = Array.from(document.querySelectorAll('[data-location-option]'));
 
 const MAX_PLAYERS = 4;
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -34,6 +35,7 @@ const online = {
   enabled: false,
   roomId: '',
   roomSeed: 0,
+  roomLocationId: '',
   roomState: 'idle',
   joinLink: '',
   hostUid: '',
@@ -250,6 +252,7 @@ const EXIT_CX = COLS - 2;
 const EXIT_CY = ROWS - 2;
 const LOCATION_BACKROOMS = 'backrooms';
 const LOCATION_FOREST_VILLAGE = 'forestVillage';
+let selectedCreateLocationId = LOCATION_BACKROOMS;
 
 // ── Canvas sizing ────────────────────────────────────────────────────────────
 function resize() {
@@ -290,9 +293,24 @@ function getLocationFromSeed(seed) {
   return ((seed >>> 0) & 1) === 0 ? LOCATION_FOREST_VILLAGE : LOCATION_BACKROOMS;
 }
 
+function normalizeLocationId(locationId) {
+  return locationId === LOCATION_FOREST_VILLAGE ? LOCATION_FOREST_VILLAGE : LOCATION_BACKROOMS;
+}
+
+function getLocationLabel(locationId) {
+  return normalizeLocationId(locationId) === LOCATION_FOREST_VILLAGE ? 'Forest Village' : 'Backrooms';
+}
+
 function applyLocationTheme(locationId) {
-  currentLocationId = locationId;
-  currentLocationName = locationId === LOCATION_FOREST_VILLAGE ? 'FOREST VILLAGE' : 'BACKROOMS';
+  currentLocationId = normalizeLocationId(locationId);
+  currentLocationName = currentLocationId === LOCATION_FOREST_VILLAGE ? 'FOREST VILLAGE' : 'BACKROOMS';
+}
+
+function setSelectedCreateLocation(locationId) {
+  selectedCreateLocationId = normalizeLocationId(locationId);
+  for (const button of locationOptionButtons) {
+    button.classList.toggle('active', button.dataset.locationOption === selectedCreateLocationId);
+  }
 }
 
 function cellIndex(cx, cy) {
@@ -1007,10 +1025,10 @@ function updateAmmoHud() {
   }
 }
 
-function initializeWorld(seed) {
+function initializeWorld(seed, locationId = null) {
   currentWorldSeed = (seed >>> 0) || hashString(`world:${Date.now()}`);
   worldRandom = createSeededRandom(currentWorldSeed);
-  applyLocationTheme(getLocationFromSeed(currentWorldSeed));
+  applyLocationTheme(locationId || getLocationFromSeed(currentWorldSeed));
   maze = new Uint8Array(COLS * ROWS);
   safeCells = new Uint8Array(COLS * ROWS);
   safeRooms = [];
@@ -1290,9 +1308,12 @@ function bindRoomListeners(roomId) {
   online.roomListeners.push(onValue(metaRef, snapshot => {
     const meta = snapshot.val();
     if (!meta) return;
-    if (meta.seed && meta.seed !== online.roomSeed) {
-      online.roomSeed = meta.seed >>> 0;
-      initializeWorld(online.roomSeed);
+    const nextSeed = meta.seed >>> 0;
+    const nextLocationId = normalizeLocationId(meta.locationId || getLocationFromSeed(nextSeed));
+    if (nextSeed && (nextSeed !== online.roomSeed || nextLocationId !== online.roomLocationId)) {
+      online.roomSeed = nextSeed;
+      online.roomLocationId = nextLocationId;
+      initializeWorld(online.roomSeed, online.roomLocationId);
       restartGame({ resetSharedState: true });
     }
   }));
@@ -1318,7 +1339,7 @@ function bindRoomListeners(roomId) {
   }));
 }
 
-async function joinRoom(roomId, { create = false } = {}) {
+async function joinRoom(roomId, { create = false, locationId = null } = {}) {
   roomId = sanitizeRoomCode(roomId);
   if (!roomId) {
     setLobbyStatus('Enter a valid room code.');
@@ -1335,12 +1356,14 @@ async function joinRoom(roomId, { create = false } = {}) {
 
   const metaRef = ref(firebaseDb, `rooms/${roomId}/meta`);
   const seed = hashString(`${roomId}:${Date.now()}:${online.localUid}`);
+  const selectedLocationId = normalizeLocationId(locationId || selectedCreateLocationId);
 
   if (create) {
     await runTransaction(metaRef, current => current || {
       seed,
       createdAt: Date.now(),
       maxPlayers: MAX_PLAYERS,
+      locationId: selectedLocationId,
     });
   }
 
@@ -1383,6 +1406,7 @@ async function joinRoom(roomId, { create = false } = {}) {
   online.enabled = true;
   online.roomId = roomId;
   online.roomSeed = roomMeta.seed >>> 0;
+  online.roomLocationId = normalizeLocationId(roomMeta.locationId || getLocationFromSeed(online.roomSeed));
   online.joinLink = getRoomUrl(roomId);
   online.sharedPickedWaters = {};
   online.monsterSnapshot = null;
@@ -1397,11 +1421,11 @@ async function joinRoom(roomId, { create = false } = {}) {
   onDisconnect(localPlayerRef).remove().catch(() => {});
 
   bindRoomListeners(roomId);
-  initializeWorld(online.roomSeed);
+  initializeWorld(online.roomSeed, online.roomLocationId);
   restartGame({ resetSharedState: true });
   await claimHostIfNeeded();
   setOverlayVisible(false);
-  setLobbyStatus(`Connected to room ${roomId}.`);
+  setLobbyStatus(`Connected to room ${roomId} (${getLocationLabel(online.roomLocationId)}).`);
   return true;
 }
 
@@ -2755,6 +2779,7 @@ function startSoloMode() {
   online.enabled = false;
   online.roomId = '';
   online.roomSeed = 0;
+  online.roomLocationId = '';
   online.hostUid = '';
   online.players = {};
   online.monsterSnapshot = null;
@@ -2769,6 +2794,14 @@ function startSoloMode() {
 }
 
 async function bootstrapMultiplayerUi() {
+  setSelectedCreateLocation(selectedCreateLocationId);
+
+  for (const button of locationOptionButtons) {
+    button.addEventListener('click', () => {
+      setSelectedCreateLocation(button.dataset.locationOption);
+    });
+  }
+
   roomCodeInput.addEventListener('input', () => {
     roomCodeInput.value = sanitizeRoomCode(roomCodeInput.value);
     updateRoomShareUi();
@@ -2780,7 +2813,7 @@ async function bootstrapMultiplayerUi() {
       return;
     }
     const roomId = generateRoomCode();
-    await joinRoom(roomId, { create: true });
+    await joinRoom(roomId, { create: true, locationId: selectedCreateLocationId });
   });
 
   joinRoomBtn.addEventListener('click', async () => {

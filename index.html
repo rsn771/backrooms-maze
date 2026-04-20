@@ -189,6 +189,48 @@
     font-size: 14px;
     line-height: 1.5;
   }
+  .locationPicker {
+    display: grid;
+    gap: 8px;
+  }
+  .locationLabel {
+    color: rgba(239, 230, 178, 0.72);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .locationOptions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .locationOption {
+    appearance: none;
+    border: 1px solid rgba(200, 185, 106, 0.28);
+    background: rgba(20, 19, 12, 0.96);
+    color: rgba(239, 230, 178, 0.86);
+    border-radius: 18px;
+    min-height: 56px;
+    padding: 10px 12px;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    display: grid;
+    gap: 4px;
+  }
+  .locationOption strong {
+    color: #fff1b5;
+    font-size: 14px;
+  }
+  .locationOption span {
+    font-size: 12px;
+    line-height: 1.35;
+  }
+  .locationOption.active {
+    border-color: rgba(255, 231, 145, 0.62);
+    box-shadow: inset 0 0 0 1px rgba(255, 231, 145, 0.28), 0 0 18px rgba(215, 197, 120, 0.12);
+    background: linear-gradient(180deg, rgba(64, 54, 24, 0.95), rgba(28, 24, 13, 0.98));
+  }
   .lobbyActions, .joinRow, #roomShareBox {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -268,6 +310,19 @@
       <div class="lobbyTitle">Backrooms Maze</div>
       <div class="lobbyText">Co-op mode for up to 4 players. Create a room, share the code or link, and survive the maze together.</div>
       <div id="lobbyStatus">Connecting co-op services…</div>
+      <div class="locationPicker">
+        <div class="locationLabel">Room Location</div>
+        <div class="locationOptions">
+          <button id="locationBackroomsBtn" class="locationOption active" type="button" data-location-option="backrooms">
+            <strong>Backrooms</strong>
+            <span>Classic maze with safe rooms and tight corridors.</span>
+          </button>
+          <button id="locationForestVillageBtn" class="locationOption" type="button" data-location-option="forestVillage">
+            <strong>Forest Village</strong>
+            <span>Forest map with houses, campfires, tents and trees.</span>
+          </button>
+        </div>
+      </div>
       <div class="lobbyActions">
         <button id="createRoomBtn" class="lobbyBtn primary" type="button">Create Room</button>
         <button id="soloBtn" class="lobbyBtn secondary" type="button">Solo</button>
