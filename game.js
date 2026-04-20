@@ -88,6 +88,12 @@ const PLAYER_SPEED = 3.2; // pixels per frame
 const WALL_T       = 8;   // wall thickness (top surface)
 const WALL_FACE    = 16;  // visible front face height (2.5D effect)
 const SCALE        = 1;
+const PLAYER_START_CX = Math.floor(COLS / 2);
+const PLAYER_START_CY = Math.floor(ROWS / 2);
+const MONSTER_START_CX = 4;
+const MONSTER_START_CY = 4;
+const EXIT_CX = COLS - 2;
+const EXIT_CY = ROWS - 2;
 
 // ── Canvas sizing ────────────────────────────────────────────────────────────
 function resize() {
@@ -108,6 +114,33 @@ const DIR = [
   { dx: 0, dy: 1,  bit: 2, opp: 0 }, // S
   { dx: -1, dy: 0, bit: 3, opp: 1 }, // W
 ];
+
+function cellIndex(cx, cy) {
+  return cy * COLS + cx;
+}
+
+function inBounds(cx, cy) {
+  return cx >= 0 && cy >= 0 && cx < COLS && cy < ROWS;
+}
+
+function openPassage(cx, cy, bit) {
+  if (!inBounds(cx, cy)) return;
+  const d = DIR[bit];
+  const nx = cx + d.dx;
+  const ny = cy + d.dy;
+  if (!inBounds(nx, ny)) return;
+  maze[cellIndex(cx, cy)] |= 1 << d.bit;
+  maze[cellIndex(nx, ny)] |= 1 << d.opp;
+}
+
+function openBetweenCells(ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  if (dx === 1 && dy === 0) openPassage(ax, ay, 1);
+  else if (dx === -1 && dy === 0) openPassage(ax, ay, 3);
+  else if (dx === 0 && dy === 1) openPassage(ax, ay, 2);
+  else if (dx === 0 && dy === -1) openPassage(ax, ay, 0);
+}
 
 function generateMaze() {
   const visited = new Uint8Array(COLS * ROWS);
@@ -289,8 +322,8 @@ for (let f = 0; f < 4; f++) drawSprite(f, false);
 
 // ── Game state ────────────────────────────────────────────────────────────────
 const player = {
-  x: Math.floor(COLS / 2) * CELL + CELL / 2,
-  y: Math.floor(ROWS / 2) * CELL + CELL / 2,
+  x: PLAYER_START_CX * CELL + CELL / 2,
+  y: PLAYER_START_CY * CELL + CELL / 2,
   vx: 0,
   vy: 0,
   frame: 0,
@@ -303,14 +336,113 @@ const cam = { x: 0, y: 0 };
 
 // Exit is near bottom-right corner
 const EXIT = {
-  x: (COLS - 2) * CELL + CELL / 2,
-  y: (ROWS - 2) * CELL + CELL / 2,
+  x: EXIT_CX * CELL + CELL / 2,
+  y: EXIT_CY * CELL + CELL / 2,
 };
 
 // Make sure exit cell is open
-maze[(ROWS-2) * COLS + (COLS-2)] |= 0b1111;
-maze[(ROWS-3) * COLS + (COLS-2)] |= 0b1111;
-maze[(ROWS-2) * COLS + (COLS-3)] |= 0b1111;
+maze[cellIndex(EXIT_CX, EXIT_CY)] |= 0b1111;
+maze[cellIndex(EXIT_CX, EXIT_CY - 1)] |= 0b1111;
+maze[cellIndex(EXIT_CX - 1, EXIT_CY)] |= 0b1111;
+
+// ── Safe rooms ───────────────────────────────────────────────────────────────
+const SAFE_ROOM_COUNT = 5;
+const SAFE_ROOM_SIZE = 3;
+const SAFE_ROOM_GAP = 6;
+const SAFE_ROOM_REPEL_DISTANCE = 18 * CELL;
+const safeCells = new Uint8Array(COLS * ROWS);
+const safeRooms = [];
+
+function isSafeCell(cx, cy) {
+  return inBounds(cx, cy) && safeCells[cellIndex(cx, cy)] === 1;
+}
+
+function rectTooClose(ax, ay, aw, ah, bx, by, bw, bh, gap) {
+  return !(
+    ax + aw - 1 + gap < bx ||
+    bx + bw - 1 + gap < ax ||
+    ay + ah - 1 + gap < by ||
+    by + bh - 1 + gap < ay
+  );
+}
+
+function carveSafeRoom(x, y, w, h) {
+  for (let cy = y; cy < y + h; cy++) {
+    for (let cx = x; cx < x + w; cx++) {
+      safeCells[cellIndex(cx, cy)] = 1;
+      if (cx + 1 < x + w) openBetweenCells(cx, cy, cx + 1, cy);
+      if (cy + 1 < y + h) openBetweenCells(cx, cy, cx, cy + 1);
+    }
+  }
+
+  const doorCandidates = [];
+  for (let cx = x; cx < x + w; cx++) {
+    doorCandidates.push({ cx, cy: y, bit: 0 });
+    doorCandidates.push({ cx, cy: y + h - 1, bit: 2 });
+  }
+  for (let cy = y; cy < y + h; cy++) {
+    doorCandidates.push({ cx: x, cy, bit: 3 });
+    doorCandidates.push({ cx: x + w - 1, cy, bit: 1 });
+  }
+
+  for (let i = doorCandidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [doorCandidates[i], doorCandidates[j]] = [doorCandidates[j], doorCandidates[i]];
+  }
+
+  const usedSides = new Set();
+  let opened = 0;
+  for (const door of doorCandidates) {
+    const sideKey = door.bit;
+    const d = DIR[door.bit];
+    const nx = door.cx + d.dx;
+    const ny = door.cy + d.dy;
+    if (!inBounds(nx, ny)) continue;
+    if (isSafeCell(nx, ny) || usedSides.has(sideKey)) continue;
+    openPassage(door.cx, door.cy, door.bit);
+    usedSides.add(sideKey);
+    opened++;
+    if (opened >= 2) break;
+  }
+
+  safeRooms.push({
+    x,
+    y,
+    w,
+    h,
+    centerCX: x + ((w - 1) >> 1),
+    centerCY: y + ((h - 1) >> 1),
+  });
+}
+
+function generateSafeRooms() {
+  let attempts = 0;
+  while (safeRooms.length < SAFE_ROOM_COUNT && attempts < 600) {
+    attempts++;
+    const x = 2 + Math.floor(Math.random() * (COLS - SAFE_ROOM_SIZE - 4));
+    const y = 2 + Math.floor(Math.random() * (ROWS - SAFE_ROOM_SIZE - 4));
+    const centerCX = x + ((SAFE_ROOM_SIZE - 1) >> 1);
+    const centerCY = y + ((SAFE_ROOM_SIZE - 1) >> 1);
+
+    const playerDist = Math.hypot(centerCX - PLAYER_START_CX, centerCY - PLAYER_START_CY);
+    const exitDist = Math.hypot(centerCX - EXIT_CX, centerCY - EXIT_CY);
+    const monsterDist = Math.hypot(centerCX - MONSTER_START_CX, centerCY - MONSTER_START_CY);
+    if (playerDist < 10 || exitDist < 8 || monsterDist < 8) continue;
+
+    let overlaps = false;
+    for (const room of safeRooms) {
+      if (rectTooClose(x, y, SAFE_ROOM_SIZE, SAFE_ROOM_SIZE, room.x, room.y, room.w, room.h, SAFE_ROOM_GAP)) {
+        overlaps = true;
+        break;
+      }
+    }
+    if (overlaps) continue;
+
+    carveSafeRoom(x, y, SAFE_ROOM_SIZE, SAFE_ROOM_SIZE);
+  }
+}
+
+generateSafeRooms();
 
 // ── Almond water ──────────────────────────────────────────────────────────────
 const ALMOND_COUNT  = 80;
@@ -323,7 +455,7 @@ const almondWaters = [];
   const pool = [];
   for (let cy = 2; cy < ROWS - 2; cy++)
     for (let cx = 2; cx < COLS - 2; cx++)
-      if (maze[cy * COLS + cx] > 0) pool.push({ cx, cy });
+      if (maze[cellIndex(cx, cy)] > 0 && !isSafeCell(cx, cy)) pool.push({ cx, cy });
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -339,17 +471,21 @@ const almondWaters = [];
 })();
 
 // ── Monster ───────────────────────────────────────────────────────────────────
-const FEAR_RANGE         = 10 * CELL;
-const MONSTER_SPD_WANDER = PLAYER_SPEED * 0.55;
-const MONSTER_SPD_CHASE  = PLAYER_SPEED * 1.2;
-const CATCH_DIST         = 26; // pixels — triggers death
+const FEAR_RANGE          = 10 * CELL;
+const MONSTER_DETECT_RANGE = 8.5 * CELL;
+const MONSTER_LOSE_RANGE   = 14 * CELL;
+const MONSTER_SPD_PATROL   = PLAYER_SPEED * 0.92;
+const MONSTER_SPD_CHASE    = PLAYER_SPEED * 1.2;
+const CATCH_DIST           = 26; // pixels — triggers death
 
 const monster = {
-  x: 4 * CELL + CELL / 2,
-  y: 4 * CELL + CELL / 2,
+  x: MONSTER_START_CX * CELL + CELL / 2,
+  y: MONSTER_START_CY * CELL + CELL / 2,
   dx: 1, dy: 0,
-  wanderTimer: 0,
   fearLevel: 0,
+  isChasing: false,
+  goalCX: MONSTER_START_CX,
+  goalCY: MONSTER_START_CY,
   // BFS pathfinding
   pathTargetCX: -1,
   pathTargetCY: -1,
@@ -366,13 +502,13 @@ let shakeX = 0, shakeY = 0;
 
 // ── BFS pathfinding ───────────────────────────────────────────────────────────
 // Returns the first cell to step into on the shortest path from→to.
-function bfsNextCell(fromCX, fromCY, toCX, toCY) {
+function bfsNextCell(fromCX, fromCY, toCX, toCY, { avoidSafeRooms = false } = {}) {
   if (fromCX === toCX && fromCY === toCY) return null;
   const size    = COLS * ROWS;
   const visited = new Uint8Array(size);
   const parent  = new Int32Array(size).fill(-1);
-  const start   = fromCY * COLS + fromCX;
-  const goal    = toCY   * COLS + toCX;
+  const start   = cellIndex(fromCX, fromCY);
+  const goal    = cellIndex(toCX, toCY);
   const queue   = [start];
   visited[start] = 1;
 
@@ -381,12 +517,13 @@ function bfsNextCell(fromCX, fromCY, toCX, toCY) {
     if (idx === goal) break;
     const cx   = idx % COLS;
     const cy   = (idx / COLS) | 0;
-    const bits = maze[cy * COLS + cx];
+    const bits = maze[cellIndex(cx, cy)];
     for (const d of DIR) {
       if (!(bits & (1 << d.bit))) continue;
       const nx = cx + d.dx, ny = cy + d.dy;
       if (nx < 0 || ny < 0 || nx >= COLS || ny >= ROWS) continue;
-      const ni = ny * COLS + nx;
+      if (avoidSafeRooms && isSafeCell(nx, ny) && (nx !== toCX || ny !== toCY)) continue;
+      const ni = cellIndex(nx, ny);
       if (visited[ni]) continue;
       visited[ni] = 1;
       parent[ni]  = idx;
@@ -406,17 +543,96 @@ function bfsNextCell(fromCX, fromCY, toCX, toCY) {
   return { cx: node % COLS, cy: (node / COLS) | 0 };
 }
 
-// ── Restart ───────────────────────────────────────────────────────────────────
-function restartGame() {
-  player.x = Math.floor(COLS / 2) * CELL + CELL / 2;
-  player.y = Math.floor(ROWS / 2) * CELL + CELL / 2;
-  player.frame = 0;
-  monster.x = 4 * CELL + CELL / 2;
-  monster.y = 4 * CELL + CELL / 2;
-  monster.fearLevel = 0;
+function resetMonsterPath() {
   monster.pathTargetCX = -1;
   monster.pathTargetCY = -1;
   monster.pathRefreshTimer = 0;
+}
+
+function setMonsterGoal(cx, cy) {
+  monster.goalCX = cx;
+  monster.goalCY = cy;
+  resetMonsterPath();
+}
+
+function monsterCanUseCell(cx, cy) {
+  return inBounds(cx, cy) && !isSafeCell(cx, cy);
+}
+
+function chooseMonsterPatrolGoal(fromCX, fromCY) {
+  let best = null;
+
+  for (let attempt = 0; attempt < 140; attempt++) {
+    const cx = 1 + Math.floor(Math.random() * (COLS - 2));
+    const cy = 1 + Math.floor(Math.random() * (ROWS - 2));
+    if (!monsterCanUseCell(cx, cy)) continue;
+    const dist = Math.abs(cx - fromCX) + Math.abs(cy - fromCY);
+    if (dist < 8) continue;
+    const score = dist + Math.random() * 6;
+    if (!best || score > best.score) best = { cx, cy, score };
+  }
+
+  if (best) return best;
+
+  for (let cy = 1; cy < ROWS - 1; cy++) {
+    for (let cx = 1; cx < COLS - 1; cx++) {
+      if (!monsterCanUseCell(cx, cy)) continue;
+      const dist = Math.abs(cx - fromCX) + Math.abs(cy - fromCY);
+      if (!best || dist > best.score) best = { cx, cy, score: dist };
+    }
+  }
+
+  return best || { cx: fromCX, cy: fromCY };
+}
+
+function refreshMonsterStep(fromCX, fromCY, toCX, toCY) {
+  if (!monsterCanUseCell(toCX, toCY)) return false;
+  const next = bfsNextCell(fromCX, fromCY, toCX, toCY, { avoidSafeRooms: true });
+  if (!next) return false;
+  monster.pathTargetCX = next.cx;
+  monster.pathTargetCY = next.cy;
+  return true;
+}
+
+function relocateMonsterAwayFromPlayer(playerCX, playerCY) {
+  let best = null;
+
+  for (let cy = 1; cy < ROWS - 1; cy++) {
+    for (let cx = 1; cx < COLS - 1; cx++) {
+      if (!monsterCanUseCell(cx, cy)) continue;
+      const dist = Math.hypot(cx - playerCX, cy - playerCY);
+      if (dist * CELL < SAFE_ROOM_REPEL_DISTANCE) continue;
+      const score = dist + Math.random() * 0.25;
+      if (!best || score > best.score) best = { cx, cy, score };
+    }
+  }
+
+  if (!best) best = chooseMonsterPatrolGoal(playerCX, playerCY);
+
+  monster.x = best.cx * CELL + CELL / 2;
+  monster.y = best.cy * CELL + CELL / 2;
+  monster.dx = 0;
+  monster.dy = 0;
+  monster.isChasing = false;
+
+  const patrolGoal = chooseMonsterPatrolGoal(best.cx, best.cy);
+  setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
+}
+
+// ── Restart ───────────────────────────────────────────────────────────────────
+function restartGame() {
+  player.x = PLAYER_START_CX * CELL + CELL / 2;
+  player.y = PLAYER_START_CY * CELL + CELL / 2;
+  player.frame = 0;
+  monster.x = MONSTER_START_CX * CELL + CELL / 2;
+  monster.y = MONSTER_START_CY * CELL + CELL / 2;
+  monster.dx = 1;
+  monster.dy = 0;
+  monster.fearLevel = 0;
+  monster.isChasing = false;
+  playerWasInSafeRoom = false;
+  const patrolGoal = chooseMonsterPatrolGoal(MONSTER_START_CX, MONSTER_START_CY);
+  setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
   speedBoostLeft = 0;
   playerDead  = false;
   deathTimer  = 0;
@@ -545,6 +761,11 @@ let nextFlicker  = 3 + Math.random() * 8;
 // ── Timer ─────────────────────────────────────────────────────────────────────
 let startTime = Date.now();
 let gameWon = false;
+let playerWasInSafeRoom = false;
+{
+  const patrolGoal = chooseMonsterPatrolGoal(MONSTER_START_CX, MONSTER_START_CY);
+  setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
+}
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
 let lastTime = 0;
@@ -627,75 +848,86 @@ function update(dt) {
   }
 
   // ── Monster AI (BFS pathfinding) ────────────────────────────────────────────
-  const monDist = Math.hypot(player.x - monster.x, player.y - monster.y);
-  const chasing = monDist < FEAR_RANGE * 0.7;
-
-  const mCX = (monster.x / CELL) | 0;
-  const mCY = (monster.y / CELL) | 0;
   const pCX = (player.x  / CELL) | 0;
   const pCY = (player.y  / CELL) | 0;
+  const playerInSafeRoom = isSafeCell(pCX, pCY);
 
-  if (chasing) {
-    // BFS: refresh path several times per second
+  if (playerInSafeRoom && !playerWasInSafeRoom) {
+    relocateMonsterAwayFromPlayer(pCX, pCY);
+  }
+
+  let mCX = (monster.x / CELL) | 0;
+  let mCY = (monster.y / CELL) | 0;
+  let monDist = Math.hypot(player.x - monster.x, player.y - monster.y);
+
+  if (playerInSafeRoom) {
+    monster.isChasing = false;
+  } else if (monster.isChasing) {
+    if (monDist > MONSTER_LOSE_RANGE) {
+      monster.isChasing = false;
+      const patrolGoal = chooseMonsterPatrolGoal(mCX, mCY);
+      setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
+    }
+  } else if (monDist <= MONSTER_DETECT_RANGE) {
+    monster.isChasing = true;
+    setMonsterGoal(pCX, pCY);
+  }
+
+  if (monster.isChasing) {
+    if (monster.goalCX !== pCX || monster.goalCY !== pCY) {
+      setMonsterGoal(pCX, pCY);
+    }
     monster.pathRefreshTimer -= dt;
     if (monster.pathRefreshTimer <= 0) {
-      const next = bfsNextCell(mCX, mCY, pCX, pCY);
-      if (next) {
-        monster.pathTargetCX = next.cx;
-        monster.pathTargetCY = next.cy;
+      if (!refreshMonsterStep(mCX, mCY, pCX, pCY)) {
+        monster.isChasing = false;
+        const patrolGoal = chooseMonsterPatrolGoal(mCX, mCY);
+        setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
       }
-      monster.pathRefreshTimer = 0.25;
-    }
-
-    // Steer toward centre of BFS waypoint cell
-    if (monster.pathTargetCX >= 0) {
-      const tx = monster.pathTargetCX * CELL + CELL / 2;
-      const ty = monster.pathTargetCY * CELL + CELL / 2;
-      const ddx = tx - monster.x;
-      const ddy = ty - monster.y;
-      const dd  = Math.sqrt(ddx * ddx + ddy * ddy);
-      if (dd > 2) {
-        monster.dx = ddx / dd;
-        monster.dy = ddy / dd;
-      } else {
-        // Waypoint reached — force immediate refresh
-        monster.pathRefreshTimer = 0;
-      }
+      monster.pathRefreshTimer = 0.2;
     }
   } else {
-    // Wander randomly
-    monster.wanderTimer -= dt;
-    if (monster.wanderTimer <= 0) {
-      // Pick a passable neighbour cell to walk toward
-      const dirs = DIR.slice().sort(() => Math.random() - 0.5);
-      const bits = maze[mCY * COLS + mCX];
-      let moved = false;
-      for (const d of dirs) {
-        if (bits & (1 << d.bit)) {
-          monster.pathTargetCX = mCX + d.dx;
-          monster.pathTargetCY = mCY + d.dy;
-          moved = true;
-          break;
-        }
-      }
-      if (!moved) { monster.pathTargetCX = mCX; monster.pathTargetCY = mCY; }
-      monster.wanderTimer = 1.2 + Math.random() * 2;
+    const reachedGoal = mCX === monster.goalCX && mCY === monster.goalCY;
+    if (!monsterCanUseCell(monster.goalCX, monster.goalCY) || reachedGoal) {
+      const patrolGoal = chooseMonsterPatrolGoal(mCX, mCY);
+      setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
     }
-    if (monster.pathTargetCX >= 0) {
-      const tx = monster.pathTargetCX * CELL + CELL / 2;
-      const ty = monster.pathTargetCY * CELL + CELL / 2;
-      const ddx = tx - monster.x, ddy = ty - monster.y;
-      const dd  = Math.sqrt(ddx * ddx + ddy * ddy);
-      if (dd > 2) { monster.dx = ddx / dd; monster.dy = ddy / dd; }
+
+    monster.pathRefreshTimer -= dt;
+    if (monster.pathRefreshTimer <= 0) {
+      if (!refreshMonsterStep(mCX, mCY, monster.goalCX, monster.goalCY)) {
+        const patrolGoal = chooseMonsterPatrolGoal(mCX, mCY);
+        setMonsterGoal(patrolGoal.cx, patrolGoal.cy);
+        refreshMonsterStep(mCX, mCY, monster.goalCX, monster.goalCY);
+      }
+      monster.pathRefreshTimer = 0.32;
     }
   }
 
-  const mspd = chasing ? MONSTER_SPD_CHASE : MONSTER_SPD_WANDER;
+  if (monster.pathTargetCX >= 0) {
+    const tx = monster.pathTargetCX * CELL + CELL / 2;
+    const ty = monster.pathTargetCY * CELL + CELL / 2;
+    const ddx = tx - monster.x;
+    const ddy = ty - monster.y;
+    const dd = Math.hypot(ddx, ddy);
+    if (dd > 2) {
+      monster.dx = ddx / dd;
+      monster.dy = ddy / dd;
+    } else {
+      resetMonsterPath();
+    }
+  }
+
+  const mspd = monster.isChasing ? MONSTER_SPD_CHASE : MONSTER_SPD_PATROL;
   monster.x += monster.dx * mspd;
   monster.y += monster.dy * mspd;
 
+  monDist = Math.hypot(player.x - monster.x, player.y - monster.y);
+
   // Smooth fear level
-  const targetFear = monDist < FEAR_RANGE ? Math.pow(1 - monDist / FEAR_RANGE, 1.4) : 0;
+  const targetFear = playerInSafeRoom || monDist >= FEAR_RANGE
+    ? 0
+    : Math.pow(1 - monDist / FEAR_RANGE, 1.4);
   monster.fearLevel += (targetFear - monster.fearLevel) * 0.04;
 
   // Shake
@@ -704,10 +936,12 @@ function update(dt) {
   shakeY = (Math.random() - 0.5) * shakeMag;
 
   // ── Catch player ─────────────────────────────────────────────────────────────
-  if (monDist < CATCH_DIST) {
+  if (!playerInSafeRoom && monDist < CATCH_DIST) {
     playerDead = true;
     deathTimer = DEATH_DURATION;
   }
+
+  playerWasInSafeRoom = playerInSafeRoom;
 }
 
 function drawMaze() {
@@ -721,7 +955,7 @@ function drawMaze() {
     for (let cx = startCX; cx < endCX; cx++) {
       const wx   = cx * CELL - cam.x;
       const wy   = cy * CELL - cam.y;
-      const bits = maze[cy * COLS + cx];
+      const bits = maze[cellIndex(cx, cy)];
       const pw   = CELL - WALL_T * 2; // passage / center width
 
       // centre corridor
@@ -739,7 +973,7 @@ function drawMaze() {
     for (let cx = startCX; cx < endCX; cx++) {
       const wx   = cx * CELL - cam.x;
       const wy   = cy * CELL - cam.y;
-      const bits = maze[cy * COLS + cx];
+      const bits = maze[cellIndex(cx, cy)];
       const pw   = CELL - WALL_T * 2;
 
       // Helper: draw wall top rect from wallCanvas
@@ -784,6 +1018,33 @@ function drawMaze() {
         wTop(wx + CELL - WALL_T, wy + WALL_T, WALL_T, pw);
       }
     }
+  }
+}
+
+function drawSafeRooms() {
+  for (const room of safeRooms) {
+    const rx = room.x * CELL - cam.x + WALL_T;
+    const ry = room.y * CELL - cam.y + WALL_T;
+    const rw = room.w * CELL - WALL_T * 2;
+    const rh = room.h * CELL - WALL_T * 2;
+
+    if (rx > canvas.width + CELL || ry > canvas.height + CELL || rx + rw < -CELL || ry + rh < -CELL) continue;
+
+    const pulse = 0.35 + 0.18 * Math.sin(Date.now() / 700 + room.centerCX);
+    ctx.save();
+    ctx.fillStyle = `rgba(80, 190, 170, ${0.12 + pulse * 0.25})`;
+    ctx.strokeStyle = 'rgba(170, 255, 235, 0.8)';
+    ctx.lineWidth = 3;
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = 'rgba(120, 255, 235, 0.55)';
+    ctx.fillRect(rx + 6, ry + 6, rw - 12, rh - 12);
+    ctx.strokeRect(rx + 6, ry + 6, rw - 12, rh - 12);
+    ctx.shadowBlur = 0;
+    ctx.font = 'bold 14px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(220,255,250,0.95)';
+    ctx.fillText('SAFE', rx + rw / 2, ry + rh / 2 + 5);
+    ctx.restore();
   }
 }
 
@@ -1050,9 +1311,9 @@ function drawMinimap() {
 
   for (let cy = 0; cy < ROWS; cy++) {
     for (let cx = 0; cx < COLS; cx++) {
-      const bits = maze[cy * COLS + cx];
+      const bits = maze[cellIndex(cx, cy)];
       if (bits > 0) {
-        ctx.fillStyle = '#8a7a3e';
+        ctx.fillStyle = isSafeCell(cx, cy) ? '#3f7c78' : '#8a7a3e';
         ctx.fillRect(mx + cx * scx, my + cy * scy, scx, scy);
       }
     }
@@ -1124,6 +1385,7 @@ function render() {
   ctx.save();
   ctx.translate(Math.round(shakeX), Math.round(shakeY));
   drawMaze();
+  drawSafeRooms();
   drawAlmondWaters();
   drawExit();
   drawMonster();
