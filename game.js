@@ -657,6 +657,7 @@ const SAFE_ROOM_REPEL_DISTANCE = 18 * CELL;
 let safeCells = new Uint8Array(COLS * ROWS);
 let safeRooms = [];
 let houseCells = new Uint8Array(COLS * ROWS);
+let windowMaze = new Uint8Array(COLS * ROWS);
 let villageHouses = [];
 let villageProps = [];
 let forestRiver = null;
@@ -1065,6 +1066,38 @@ function carveVillageHouse(x, y, w, h) {
     if (opened >= 2) break;
   }
 
+  // ── Windows: player-only passages on remaining sides ──
+  const houseWindows = [];
+  const windowCandidates = [];
+  for (let cx = x + 1; cx < x + w - 1; cx++) {
+    if (!usedSides.has(0)) windowCandidates.push({ cx, cy: y,     bit: 0 });
+    if (!usedSides.has(2)) windowCandidates.push({ cx, cy: y+h-1, bit: 2 });
+  }
+  for (let cy = y + 1; cy < y + h - 1; cy++) {
+    if (!usedSides.has(3)) windowCandidates.push({ cx: x,     cy, bit: 3 });
+    if (!usedSides.has(1)) windowCandidates.push({ cx: x+w-1, cy, bit: 1 });
+  }
+  for (let i = windowCandidates.length - 1; i > 0; i--) {
+    const j = Math.floor(worldRandom() * (i + 1));
+    [windowCandidates[i], windowCandidates[j]] = [windowCandidates[j], windowCandidates[i]];
+  }
+  let winOpened = 0;
+  const winUsedSides = new Set();
+  for (const win of windowCandidates) {
+    if (winUsedSides.has(win.bit)) continue;
+    const d = DIR[win.bit];
+    const nx = win.cx + d.dx;
+    const ny = win.cy + d.dy;
+    if (!inBounds(nx, ny) || isHouseCell(nx, ny)) continue;
+    openPassage(win.cx, win.cy, win.bit);
+    windowMaze[cellIndex(win.cx, win.cy)] |= (1 << win.bit);
+    windowMaze[cellIndex(nx, ny)] |= (1 << d.opp);
+    houseWindows.push({ cx: win.cx, cy: win.cy, bit: win.bit });
+    winUsedSides.add(win.bit);
+    winOpened++;
+    if (winOpened >= 2) break;
+  }
+
   villageHouses.push({
     x,
     y,
@@ -1075,6 +1108,7 @@ function carveVillageHouse(x, y, w, h) {
     roofTone: 24 + Math.floor(worldRandom() * 30),
     wallTone: 44 + Math.floor(worldRandom() * 26),
     glow: 0.45 + worldRandom() * 0.35,
+    windows: houseWindows,
   });
 }
 
@@ -1199,12 +1233,6 @@ function generateVillageProps() {
         width: 30 + worldRandom() * 6,
         height: 20 + worldRandom() * 4,
         entranceSide: worldRandom() < 0.5 ? -1 : 1,
-        safeZone: true,
-      });
-      markSafeZoneArea(spot.cx, spot.cy, 1, 1, {
-        type: 'tent',
-        label: 'CAMP',
-        pulseOffset: worldRandom() * Math.PI * 2,
       });
       tentsPlaced++;
       if (tentsPlaced >= tentTarget) break;
@@ -1238,7 +1266,7 @@ function generateVillageProps() {
 
   let treeCount = 0;
   let treeAttempts = 0;
-  while (treeCount < 380 && treeAttempts < 7600) {
+  while (treeCount < 580 && treeAttempts < 7600) {
     treeAttempts++;
     const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
     const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
@@ -1321,6 +1349,53 @@ function generateVillageProps() {
       height: 10 + worldRandom() * 5,
     });
     stumpCount++;
+  }
+
+  let mushCount = 0, mushAttempts = 0;
+  while (mushCount < 90 && mushAttempts < 2200) {
+    mushAttempts++;
+    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
+    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
+    if (!isVillagePropPlacementAllowed(cx, cy, 2, 0.65)) continue;
+    if (hasMarkedCellNear(forestRiverCells, cx, cy, 1)) continue;
+    pushVillageProp({
+      type: 'mushroom', cx, cy,
+      blocking: false, shape: 'circle', radius: 0,
+      red: worldRandom() < 0.55,
+      size: 0.7 + worldRandom() * 0.55,
+    });
+    mushCount++;
+  }
+
+  let barrelCount = 0, barrelAttempts = 0;
+  while (barrelCount < 32 && barrelAttempts < 1000) {
+    barrelAttempts++;
+    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
+    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
+    if (!isVillagePropPlacementAllowed(cx, cy, 3, 1.4)) continue;
+    if (hasMarkedCellNear(forestRiverCells, cx, cy, 1)) continue;
+    pushVillageProp({
+      type: 'barrel', cx, cy,
+      blocking: true, shape: 'circle', radius: 10,
+      broken: worldRandom() < 0.22,
+    });
+    barrelCount++;
+  }
+
+  let lanternCount = 0, lanternAttempts = 0;
+  while (lanternCount < 20 && lanternAttempts < 800) {
+    lanternAttempts++;
+    const cx = 1 + Math.floor(worldRandom() * (COLS - 2));
+    const cy = 1 + Math.floor(worldRandom() * (ROWS - 2));
+    if (!isVillagePropPlacementAllowed(cx, cy, 3, 1.8, { avoidPaths: false })) continue;
+    if (hasMarkedCellNear(forestRiverCells, cx, cy, 1)) continue;
+    // Place near paths / houses preferred but random is fine
+    pushVillageProp({
+      type: 'lantern', cx, cy,
+      blocking: false, shape: 'circle', radius: 0,
+      flicker: worldRandom() * Math.PI * 2,
+    });
+    lanternCount++;
   }
 
   let logCount = 0;
@@ -1461,6 +1536,7 @@ function initializeWorld(seed, locationId = null) {
   safeCells = new Uint8Array(COLS * ROWS);
   safeRooms = [];
   houseCells = new Uint8Array(COLS * ROWS);
+  windowMaze = new Uint8Array(COLS * ROWS);
   villageHouses = [];
   villageProps = [];
   forestRiver = null;
@@ -1540,6 +1616,7 @@ function bfsNextCell(fromCX, fromCY, toCX, toCY, { avoidSafeRooms = false } = {}
     const bits = maze[cellIndex(cx, cy)];
     for (const d of DIR) {
       if (!(bits & (1 << d.bit))) continue;
+      if (windowMaze[cellIndex(cx, cy)] & (1 << d.bit)) continue; // windows: player only
       const nx = cx + d.dx, ny = cy + d.dy;
       if (nx < 0 || ny < 0 || nx >= COLS || ny >= ROWS) continue;
       if (avoidSafeRooms && isSafeCell(nx, ny) && (nx !== toCX || ny !== toCY)) continue;
@@ -2786,41 +2863,69 @@ function drawVillageProps() {
     ctx.save();
 
     if (prop.type === 'tree') {
-      const sway = Math.round(Math.sin(Date.now() / 900 + prop.sway) * 1.2);
+      const sway = Math.round(Math.sin(Date.now() / 920 + prop.sway) * 1);
       const size = prop.size || 1;
-      const trunkW = Math.max(6, Math.round(6 * size));
-      const trunkH = Math.max(24, Math.round(24 * size));
-      const trunkX = Math.round(sx - trunkW / 2);
-      const trunkY = Math.round(sy - trunkH + 8);
-      const topX = Math.round(sx + sway);
-      const baseY = Math.round(sy + 6);
+      const trunkW = Math.max(4, Math.round(5 * size));
+      const trunkH = Math.max(14, Math.round(18 * size));
+      const bx = sx + sway;
+      const by = sy;
 
-      ctx.fillStyle = '#2a180c';
-      ctx.fillRect(trunkX, trunkY, trunkW, trunkH);
-      ctx.fillStyle = '#3d2413';
-      ctx.fillRect(trunkX + 1, trunkY, 2, trunkH);
-      ctx.shadowBlur = 20;
-      ctx.shadowColor = 'rgba(14, 60, 30, 0.55)';
-      const layers = [
-        { y: -58, w: 10, h: 8, color: '#132a17' },
-        { y: -48, w: 16, h: 8, color: '#16311b' },
-        { y: -38, w: 22, h: 8, color: '#18361f' },
-        { y: -28, w: 28, h: 9, color: '#1d3f24' },
-        { y: -16, w: 34, h: 10, color: '#224a2a' },
-        { y: -3,  w: 40, h: 10, color: '#27532f' },
+      // Trunk
+      ctx.fillStyle = '#160a03';
+      ctx.fillRect(Math.round(sx - trunkW / 2), by - trunkH + 4, trunkW, trunkH);
+      ctx.fillStyle = '#2c160a';
+      ctx.fillRect(Math.round(sx - trunkW / 2 + 1), by - trunkH + 4, 1, trunkH);
+
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = 'rgba(4,16,8,0.55)';
+
+      // Pointed layered tiers — alternating wide/narrow for classic pixel tree look
+      const tiers = [
+        { dy: -62, hw:  3, th: 4, main: '#0a1c0d', hi: '#162e18' },
+        { dy: -58, hw:  6, th: 4, main: '#0b2010', hi: '#183214' },
+        { dy: -54, hw:  4, th: 4, main: '#0d2212', hi: '#1a3416' },
+        { dy: -50, hw:  8, th: 4, main: '#0f2614', hi: '#1e3a1c' },
+        { dy: -46, hw:  6, th: 4, main: '#112818', hi: '#203e20' },
+        { dy: -42, hw: 10, th: 5, main: '#132c1a', hi: '#23431f' },
+        { dy: -37, hw:  8, th: 5, main: '#16301d', hi: '#274724' },
+        { dy: -32, hw: 12, th: 5, main: '#183420', hi: '#2b4d28' },
+        { dy: -27, hw: 10, th: 5, main: '#1b3823', hi: '#2e502a' },
+        { dy: -22, hw: 14, th: 6, main: '#1e3c27', hi: '#32562e' },
+        { dy: -16, hw: 12, th: 6, main: '#21402a', hi: '#365b32' },
+        { dy: -10, hw: 16, th: 6, main: '#24452d', hi: '#3a6038' },
+        { dy:  -4, hw: 14, th: 7, main: '#274930', hi: '#3e653c' },
+        { dy:   3, hw: 18, th: 7, main: '#2a4e33', hi: '#426840' },
       ];
 
-      for (const layer of layers) {
-        const w = Math.max(8, Math.round(layer.w * size));
-        const h = Math.max(6, Math.round(layer.h * size));
-        const x = Math.round(topX - w / 2);
-        const y = Math.round(baseY + layer.y * size);
-        ctx.fillStyle = layer.color;
-        ctx.fillRect(x, y, w, h);
+      for (let ti = 0; ti < tiers.length; ti++) {
+        const tier = tiers[ti];
+        const w = Math.max(4, Math.round(tier.hw * 2 * size));
+        const h = Math.max(3, Math.round(tier.th * size));
+        const tx = Math.round(bx - w / 2);
+        const ty = Math.round(by + tier.dy * size);
+        ctx.fillStyle = tier.main;
+        ctx.fillRect(tx, ty, w, h);
+        // Bright left-edge highlight (lighter strip)
+        ctx.fillStyle = tier.hi;
+        ctx.fillRect(tx + 1, ty, Math.max(2, Math.round(w * 0.28)), 1);
+        ctx.fillRect(tx, ty + 1, 1, Math.max(1, Math.round(h * 0.5)));
+        // Darker bottom edge
+        ctx.fillStyle = 'rgba(0,0,0,0.28)';
+        ctx.fillRect(tx, ty + h - 1, w, 1);
+        // Subtle snow on every 3rd tier tip
+        if (ti % 3 === 0) {
+          ctx.fillStyle = 'rgba(210,240,215,0.14)';
+          ctx.fillRect(tx + Math.round(w * 0.25), ty, Math.round(w * 0.5), 1);
+        }
       }
 
-      ctx.fillStyle = 'rgba(130, 170, 116, 0.1)';
-      ctx.fillRect(Math.round(topX - 2), Math.round(baseY - 48 * size), 4, Math.round(34 * size));
+      // Top spike (2px wide)
+      ctx.fillStyle = '#1e4020';
+      ctx.fillRect(Math.round(bx - 1), Math.round(by - 65 * size), 2, 4);
+      ctx.fillStyle = '#304f34';
+      ctx.fillRect(Math.round(bx - 1), Math.round(by - 67 * size), 1, 2);
+
+      ctx.shadowBlur = 0;
     } else if (prop.type === 'deadTree') {
       const sway = Math.sin(Date.now() / 1100 + prop.sway) * 1.2;
       ctx.strokeStyle = '#24160e';
@@ -2908,37 +3013,136 @@ function drawVillageProps() {
       ctx.arc(sx + 8 * (prop.entranceSide || 1), sy + 6, 4, 0, Math.PI * 2);
       ctx.fill();
     } else if (prop.type === 'campfire') {
-      const flicker = 0.65 + 0.35 * Math.sin(Date.now() / 120 + prop.flicker);
-      ctx.shadowBlur = 24;
-      ctx.shadowColor = `rgba(255,120,40,${0.65 * flicker})`;
-      ctx.fillStyle = `rgba(255,120,30,${0.28 + 0.18 * flicker})`;
-      ctx.beginPath();
-      ctx.arc(sx, sy, 18, 0, Math.PI * 2);
-      ctx.fill();
+      const t = Date.now();
+      const fl  = 0.55 + 0.45 * Math.sin(t / 95  + prop.flicker);
+      const fl2 = 0.50 + 0.50 * Math.sin(t / 70  + prop.flicker * 1.4);
+      const fl3 = 0.60 + 0.40 * Math.sin(t / 130 + prop.flicker * 0.7);
+
+      // Ground ember glow
+      ctx.fillStyle = `rgba(255,80,10,${0.10 * fl})`;
+      ctx.fillRect(sx - 16, sy - 4, 32, 14);
+
+      // Logs — two crossing rectangles
+      ctx.fillStyle = '#2e1608';
+      ctx.fillRect(sx - 11, sy,     22, 5);  // horizontal log
+      ctx.fillRect(sx -  2, sy - 8, 5,  16); // vertical log
+      ctx.fillStyle = '#4a2812';
+      ctx.fillRect(sx - 10, sy + 1, 20, 2);
+      ctx.fillRect(sx -  1, sy - 7, 3,  14);
+      // Log ends (lighter cross-section)
+      ctx.fillStyle = '#7a5038';
+      ctx.fillRect(sx - 12, sy,     2, 5);
+      ctx.fillRect(sx +  10, sy,    2, 5);
+
+      // Pixel flames — layered rects, tallest in center
+      const fh = Math.round((12 + 10 * fl) * 1);
+      // Outer red-orange base
+      ctx.fillStyle = `rgba(200,44,0,${0.72 + 0.1 * fl3})`;
+      ctx.fillRect(sx - 8, sy - fh + 4, 16, fh - 2);
+      // Mid orange
+      ctx.fillStyle = `rgba(255,96,0,${0.82 + 0.1 * fl2})`;
+      ctx.fillRect(sx - 6, sy - fh + 2, 12, fh);
+      // Inner yellow-orange
+      ctx.fillStyle = `rgba(255,164,24,${0.88})`;
+      ctx.fillRect(sx - 4, sy - fh, 8, fh + 1);
+      // Core bright yellow
+      ctx.fillStyle = `rgba(255,240,120,${0.90 + 0.1 * fl})`;
+      ctx.fillRect(sx - 2, sy - fh - 2, 4, fh - 2);
+      // White-hot tip
+      ctx.fillStyle = `rgba(255,255,220,${0.70 * fl})`;
+      ctx.fillRect(sx - 1, sy - fh - 4, 2, 4);
+
+      // Single-pixel sparks
+      if (fl > 0.75) {
+        ctx.fillStyle = '#ffe080';
+        ctx.fillRect(sx + Math.round((fl2 - 0.5) * 12), sy - fh - 6, 2, 2);
+      }
+      if (fl3 > 0.8) {
+        ctx.fillStyle = '#ffcc40';
+        ctx.fillRect(sx - Math.round(fl * 8),  sy - fh - 4, 1, 1);
+      }
+
+      // Soft point light glow
+      ctx.shadowBlur = 20;
+      ctx.shadowColor = `rgba(255,90,0,${0.45 * fl})`;
+      ctx.fillStyle   = 'rgba(255,100,0,0.01)';
+      ctx.fillRect(sx - 1, sy - 2, 2, 2);
       ctx.shadowBlur = 0;
-      ctx.strokeStyle = '#5e3618';
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(sx - 10, sy + 7);
-      ctx.lineTo(sx + 8, sy - 5);
-      ctx.moveTo(sx - 8, sy - 4);
-      ctx.lineTo(sx + 10, sy + 8);
-      ctx.stroke();
-      ctx.fillStyle = '#ffb347';
-      ctx.beginPath();
-      ctx.moveTo(sx, sy - 14);
-      ctx.lineTo(sx - 8, sy + 3);
-      ctx.lineTo(sx, sy - 2);
-      ctx.lineTo(sx + 8, sy + 4);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = '#fff0a8';
-      ctx.beginPath();
-      ctx.moveTo(sx, sy - 8);
-      ctx.lineTo(sx - 4, sy + 1);
-      ctx.lineTo(sx + 4, sy + 1);
-      ctx.closePath();
-      ctx.fill();
+    } else if (prop.type === 'mushroom') {
+      const ms = prop.size || 1;
+      const red = prop.red;
+      const sW = Math.max(3, Math.round(4 * ms));
+      const sH = Math.max(5, Math.round(7 * ms));
+      const cW = Math.max(8, Math.round(14 * ms));
+      const cH = Math.max(5, Math.round(8 * ms));
+      const ox = sx, oy = sy;
+      // Stem
+      ctx.fillStyle = '#c8c0a4';
+      ctx.fillRect(ox - Math.round(sW / 2), oy - sH, sW, sH);
+      ctx.fillStyle = 'rgba(0,0,0,0.18)';
+      ctx.fillRect(ox + 1, oy - sH, 1, sH);
+      // Cap
+      ctx.fillStyle = red ? '#b81818' : '#a06428';
+      ctx.fillRect(ox - Math.round(cW / 2), oy - sH - cH + 2, cW, cH);
+      ctx.fillStyle = red ? '#d42424' : '#c07c38';
+      ctx.fillRect(ox - Math.round(cW / 2) + 2, oy - sH - cH, cW - 4, 2);
+      // White dots on red mushroom
+      if (red) {
+        ctx.fillStyle = '#f0f0e8';
+        ctx.fillRect(ox - 3, oy - sH - cH + 2, 3, 3);
+        ctx.fillRect(ox + 4, oy - sH - cH + 3, 2, 2);
+        ctx.fillRect(ox - 6, oy - sH - cH + 3, 2, 2);
+      }
+      // Gill underside
+      ctx.fillStyle = 'rgba(240,230,190,0.65)';
+      ctx.fillRect(ox - Math.round(cW / 2) + 2, oy - sH + 2, cW - 4, 2);
+    } else if (prop.type === 'barrel') {
+      const bw = 16, bh = 22;
+      const bx2 = sx - bw / 2, by2 = sy - bh + 4;
+      // Main stave
+      ctx.fillStyle = '#4a2c10';
+      ctx.fillRect(bx2, by2, bw, bh);
+      ctx.fillStyle = '#6a4220';
+      ctx.fillRect(bx2 + 2, by2, bw - 4, bh);
+      // Metal hoops
+      ctx.fillStyle = '#707060';
+      ctx.fillRect(bx2, by2 + 3, bw, 2);
+      ctx.fillRect(bx2, by2 + bh - 6, bw, 2);
+      ctx.fillRect(bx2, by2 + Math.round(bh / 2) - 1, bw, 2);
+      // Top cap
+      ctx.fillStyle = '#583c18';
+      ctx.fillRect(bx2 + 1, by2, bw - 2, 3);
+      // Shadow side
+      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      ctx.fillRect(bx2 + bw - 3, by2 + 2, 3, bh - 4);
+      if (prop.broken) {
+        ctx.fillStyle = 'rgba(0,0,0,0.38)';
+        ctx.fillRect(bx2 + 4, by2, 5, Math.round(bh * 0.55));
+      }
+    } else if (prop.type === 'lantern') {
+      const lt = Date.now();
+      const lfl = 0.6 + 0.4 * Math.sin(lt / 200 + prop.flicker);
+      const lfl2 = 0.5 + 0.5 * Math.sin(lt / 140 + prop.flicker * 1.2);
+      // Pole
+      ctx.fillStyle = '#1c1208';
+      ctx.fillRect(sx - 2, sy - 36, 4, 36);
+      ctx.fillStyle = '#2c1c0c';
+      ctx.fillRect(sx - 1, sy - 36, 1, 36);
+      // Lantern cage
+      ctx.fillStyle = '#3a3020';
+      ctx.fillRect(sx - 7, sy - 42, 14, 12);
+      ctx.fillStyle = '#2a2010';
+      ctx.fillRect(sx - 7, sy - 42, 14, 2);
+      ctx.fillRect(sx - 7, sy - 32, 14, 2);
+      // Glow inside
+      ctx.shadowBlur = 12;
+      ctx.shadowColor = `rgba(255,190,60,${0.7 * lfl})`;
+      ctx.fillStyle = `rgba(255,210,80,${0.7 + 0.3 * lfl2})`;
+      ctx.fillRect(sx - 4, sy - 40, 8, 8);
+      ctx.shadowBlur = 0;
+      // Hook at top
+      ctx.fillStyle = '#2a2010';
+      ctx.fillRect(sx - 1, sy - 44, 2, 4);
     }
 
     ctx.restore();
@@ -2970,10 +3174,21 @@ function drawVillageHouses() {
     ctx.fillStyle = 'rgba(24, 20, 16, 0.34)';
     ctx.fillRect(x + 16, y + 18, w - 32, h - 36);
 
-    ctx.fillStyle = `rgba(255, 214, 120, ${glow})`;
-    const midY = y + h / 2;
-    ctx.fillRect(x + 14, midY - 10, 8, 12);
-    ctx.fillRect(x + w - 22, midY - 10, 8, 12);
+    // Draw actual window passages as glowing yellow panes
+    const winPulse = 0.7 + 0.3 * Math.sin(Date.now() / 800 + (house.centerCX || 0));
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = `rgba(255,210,100,${0.6 * winPulse})`;
+    ctx.fillStyle = `rgba(255, 214, 120, ${(glow || 0.6) * winPulse})`;
+    for (const win of (house.windows || [])) {
+      const wx2 = win.cx * CELL - cam.x;
+      const wy2 = win.cy * CELL - cam.y;
+      // Draw a bright rect on the appropriate wall face
+      if (win.bit === 0) ctx.fillRect(wx2 + WALL_T + 2, wy2,              CELL - WALL_T * 2 - 4, WALL_T);
+      if (win.bit === 2) ctx.fillRect(wx2 + WALL_T + 2, wy2 + CELL - WALL_T, CELL - WALL_T * 2 - 4, WALL_T);
+      if (win.bit === 3) ctx.fillRect(wx2,              wy2 + WALL_T + 2, WALL_T, CELL - WALL_T * 2 - 4);
+      if (win.bit === 1) ctx.fillRect(wx2 + CELL - WALL_T, wy2 + WALL_T + 2, WALL_T, CELL - WALL_T * 2 - 4);
+    }
+    ctx.shadowBlur = 0;
     ctx.fillStyle = 'rgba(18, 12, 8, 0.88)';
     ctx.fillRect(x + w / 2 - 7, y + h - 18, 14, 10);
 
